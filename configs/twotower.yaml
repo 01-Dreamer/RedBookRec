@@ -1,0 +1,8 @@
+embedding_dim: 64
+hidden_dim: 128
+batch_size: 512
+epochs: 1
+learning_rate: 0.001
+max_train_samples: 80000
+num_eval_users: 500
+recall_top_k: 100

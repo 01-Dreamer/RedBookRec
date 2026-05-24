@@ -1,0 +1,12 @@
+debug:
+  enabled: false
+
+runtime:
+  device: auto
+
+data:
+  history_max_len: 30
+
+evaluation:
+  max_users:
+  ranker_candidates_per_user: 300

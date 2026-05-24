@@ -1,0 +1,11 @@
+pandas
+numpy
+pyarrow
+scikit-learn
+torch
+tqdm
+pyyaml
+rich
+rank-bm25
+scipy
+streamlit

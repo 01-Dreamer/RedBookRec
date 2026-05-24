@@ -1,1 +1,6 @@
-/dataset
+dataset/
+data_processed/
+models/
+outputs/
+__pycache__/
+*.pyc

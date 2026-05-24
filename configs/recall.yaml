@@ -1,0 +1,17 @@
+popular:
+  top_k: 200
+
+itemcf:
+  top_k: 200
+  max_history_len: 30
+  max_neighbors_per_item: 80
+
+text:
+  enabled: true
+  top_k: 100
+  max_features: 20000
+  max_users: 1000
+  max_notes: 50000
+
+merge:
+  top_k_per_user: 300

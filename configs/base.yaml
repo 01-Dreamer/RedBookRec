@@ -1,0 +1,26 @@
+seed: 2025
+
+paths:
+  dataset_dir: dataset
+  processed_dir: data_processed
+  outputs_dir: outputs
+  models_dir: models
+
+debug:
+  enabled: true
+  max_users: 5000
+  max_notes: 50000
+  max_interactions: 200000
+
+data:
+  history_max_len: 20
+  min_positive_label: click
+  page_time_clip: 300.0
+
+runtime:
+  device: auto
+  num_workers: 0
+
+evaluation:
+  max_users: 1000
+  ranker_candidates_per_user: 80

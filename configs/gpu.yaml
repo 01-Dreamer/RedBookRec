@@ -1,0 +1,5 @@
+runtime:
+  device: cuda
+
+debug:
+  enabled: false
