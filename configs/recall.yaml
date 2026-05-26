@@ -1,17 +1,21 @@
-popular:
+search:
+  index_type: hybrid_bm25_tfidf
+  analyzer: char
+  ngram_range: [1, 2]
+  min_df: 2
+  max_features: 200000
+  text_fields:
+    - note_title
+    - note_content
+    - taxonomy1_id
+    - taxonomy2_id
+    - taxonomy3_id
   top_k: 200
 
-itemcf:
-  top_k: 200
-  max_history_len: 30
-  max_neighbors_per_item: 80
-
-text:
-  enabled: true
-  top_k: 100
-  max_features: 20000
-  max_users: 1000
-  max_notes: 50000
-
-merge:
-  top_k_per_user: 300
+twotower:
+  embedding_dim: 64
+  hidden_dims: [128, 64]
+  negatives_per_positive: 3
+  learning_rate: 0.001
+  weight_decay: 0.000001
+  candidate_top_k: 200

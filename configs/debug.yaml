@@ -1,0 +1,28 @@
+runtime:
+  mode: debug
+  device: cpu
+  batch_size: 512
+  epochs: 1
+  num_workers: 0
+  mixed_precision: false
+
+limits:
+  max_users: 2000
+  max_notes: 50000
+  max_interactions: 200000
+  max_history: 200
+
+search:
+  top_k: 200
+
+twotower:
+  embedding_dim: 64
+  hidden_dims: [128, 64]
+  negatives_per_positive: 3
+
+rank:
+  dcn_hidden_dims: [128, 64]
+  sim_hidden_dims: [128, 64]
+  sim_last_n: 20
+  sim_top_k: 20
+  sim_max_history: 200

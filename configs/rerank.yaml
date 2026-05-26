@@ -1,0 +1,5 @@
+rerank:
+  final_top_k: 20
+  diversity_weight: 0.25
+  similarity: taxonomy
+  dpp_epsilon: 0.000001

@@ -1,430 +1,364 @@
 # RedBookRec
 
-RedBookRec 是一个基于本地 Qilin 数据集的“小红书 / REDNote 风格”离线内容推荐系统项目。
+RedBookRec 是一个基于 Qilin 数据集的小红书风格内容推荐系统项目。项目目标是构建一条完整的离线推荐链路，覆盖数据预处理、召回、粗排、精排、重排、评测和单用户预测。
 
-这个项目的目标不是做一个小 demo，而是实现一套可阅读、可运行、适合学习和简历展示的推荐系统代码。它使用公开研究数据集 Qilin，模拟内容流推荐的常见离线流程；它不是小红书真实线上推荐系统的复现，也不声称还原小红书的真实推荐算法。
+本项目使用公开 Qilin 数据集实现“小红书风格”的内容流推荐系统，不代表也不声称复现小红书真实线上推荐系统。
 
-## 项目定位
+## 系统架构
 
-本项目覆盖一条完整的离线推荐链路：
+RedBookRec 当前采用四阶段推荐架构：
 
-```text
-本地 Qilin parquet 数据
-  -> 数据结构检查
-  -> 字段映射与样本预处理
-  -> 用户画像与笔记画像
-  -> 多路召回
-  -> 候选合并
-  -> 双塔召回模型
-  -> DIN 风格排序模型
-  -> 多目标打分
-  -> 多样性重排
-  -> 离线评估
-  -> 用户推荐命令行示例
-```
+| 阶段 | 算法 | 作用 |
+| --- | --- | --- |
+| 召回 | Search Recall + Two-Tower | 有关键词时走 BM25 + TF-IDF 搜索召回；无关键词时走 Two-Tower 个性化召回 |
+| 粗排 | DCN-lite | 使用轻量特征交叉模型快速过滤弱相关候选 |
+| 精排 | SIM | 使用 `lastN` 近期行为和 `topK` 长历史目标相关行为建模用户兴趣 |
+| 重排 | DPP | 在高分候选中选择更高质量且更多样的最终列表 |
 
-默认配置偏向本地 CPU 调试，适合在 16 核 CPU、24GB 内存这类机器上验证代码正确性。后续迁移到 GPU 服务器时，可以通过命令行参数或配置文件放大训练数据量、批大小和训练轮数。
-
-## 数据说明
-
-数据集已经在本地 `./dataset/` 目录下，不需要也不应该重新下载。
-
-主要使用的数据子集：
-
-- `notes`：笔记 / 内容池
-- `user_feat`：用户特征表
-- `recommendation_train`：推荐训练数据
-- `recommendation_test`：推荐测试数据
-
-暂时不作为第一阶段主链路的数据：
-
-- `search_train`
-- `search_test`
-- `dqa`
-
-代码不会盲目假设字段名。第一步会运行数据结构检查脚本，保存字段、类型、样例和嵌套字段摘要。之后解析器会把 Qilin 原始字段映射到项目内部统一字段，例如：
+整体流程：
 
 ```text
-user_idx                  -> user_id
-note_idx                  -> note_id
-recent_clicked_note_idxs  -> history_note_ids
-rec_result_details_with_idx 中的 click/like/collect/comment/share/page_time
-note_title                -> title
-note_content              -> content
-taxonomy1_id              -> category
+Qilin dataset
+  -> inspect_dataset
+  -> prepare_data
+  -> build_search_index / train_twotower
+  -> train_dcn_lite
+  -> train_sim
+  -> rerank_dpp
+  -> evaluate
+  -> recommend_user / app.py
 ```
 
-缺失的可选字段会跳过；关键字段缺失时会给出明确报错，提示先运行结构检查脚本。
+## 数据集目录
 
-## 环境要求
+默认数据集目录为 `dataset/`。
 
-使用已有 conda 环境 `rs`：
+主要使用：
+
+| 路径 | 用途 |
+| --- | --- |
+| `dataset/recommendation_train/` | 推荐训练日志 |
+| `dataset/recommendation_test/` | 推荐测试日志 |
+| `dataset/notes/` | 笔记内容库 |
+| `dataset/user_feat/` | 用户画像和 dense 用户特征 |
+| `dataset/search_train/` | 搜索训练数据，可用于搜索召回优化 |
+| `dataset/search_test/` | 搜索测试数据，可用于搜索召回评测 |
+| `dataset/dqa/` | 后续可用于推荐解释或 RAG |
+
+原始数据保持只读。预处理结果、索引、模型和评测结果默认写入 `artifacts/`。
+
+## 环境安装
+
+建议使用 Python 虚拟环境或 conda 环境，环境名称不限。
 
 ```bash
-conda run -n rs python --version
+pip install -r requirements.txt
 ```
 
-安装依赖：
+如果暂时不需要 Streamlit，也可以先只跑命令行链路。当前 `app.py` 在未安装 Streamlit 时会提示改用 `scripts/recommend_user.py`。
 
-```bash
-conda run -n rs pip install -r requirements.txt
-```
+## 配置系统
 
-不要使用 `base` 环境，也不要新建环境。所有脚本都按下面这种方式运行：
-
-```bash
-conda run -n rs python scripts/脚本名.py
-```
-
-## 本地 CPU 推荐运行方式
-
-本地机器只建议做小规模验证，确认数据解析、训练、预测、评估链路没有问题。默认 `configs/base.yaml` 已经开启 debug 限制：
-
-```yaml
-debug:
-  enabled: true
-  max_users: 5000
-  max_notes: 50000
-  max_interactions: 200000
-```
-
-完整小规模流水线：
-
-```bash
-conda run -n rs python scripts/00_inspect_dataset.py
-conda run -n rs python scripts/01_prepare_data.py
-conda run -n rs python scripts/02_build_recall.py
-conda run -n rs python scripts/03_train_twotower.py
-conda run -n rs python scripts/04_train_ranker.py
-conda run -n rs python scripts/05_evaluate.py --max-eval-users 100
-conda run -n rs python scripts/06_recommend_user.py --random_user --top_k 20
-```
-
-如果只想快速检查排序模型训练代码：
-
-```bash
-conda run -n rs python scripts/04_train_ranker.py --epochs 1 --batch-size 512 --max-train-samples 50000
-```
-
-如果只想快速检查双塔训练代码：
-
-```bash
-conda run -n rs python scripts/03_train_twotower.py --epochs 1 --batch-size 512 --max-train-samples 50000
-```
-
-如果只想快速检查推荐输出：
-
-```bash
-conda run -n rs python scripts/06_recommend_user.py --random_user --top_k 10
-```
-
-## GPU 服务器运行方式
-
-迁移到 GPU 服务器后，可以使用同一套脚本，通过 `--full` 关闭 debug 限制，通过 `--device cuda` 使用 GPU：
-
-```bash
-conda run -n rs python scripts/01_prepare_data.py --full
-conda run -n rs python scripts/02_build_recall.py --full
-conda run -n rs python scripts/03_train_twotower.py --full --device cuda --epochs 5 --batch-size 2048 --max-train-samples 2000000
-conda run -n rs python scripts/04_train_ranker.py --full --device cuda --epochs 5 --batch-size 2048 --max-train-samples 2000000
-conda run -n rs python scripts/05_evaluate.py --full --device cuda
-conda run -n rs python scripts/06_recommend_user.py --random_user --top_k 20 --device cuda
-```
-
-也可以加载额外配置文件：
-
-```bash
-conda run -n rs python scripts/04_train_ranker.py --config configs/gpu.yaml --epochs 10 --batch-size 4096
-```
-
-常用可覆盖参数：
+项目使用统一配置目录：
 
 ```text
---full                  关闭 debug 限制
---device cuda           使用 GPU
---device cpu            强制使用 CPU
---epochs                覆盖训练轮数
---batch-size            覆盖批大小
---max-train-samples     覆盖最大训练样本数
---max-users             覆盖 debug 用户数
---max-notes             覆盖 debug 笔记数
---max-interactions      覆盖 debug 交互数
---max-eval-users        覆盖评估用户数
---config                追加自定义 yaml 配置
+configs/
+  base.yaml
+  debug.yaml
+  full.yaml
+  recall.yaml
+  rank.yaml
+  rerank.yaml
 ```
 
-## 脚本说明
+配置覆盖顺序：
 
-### 1. 数据结构检查
+```text
+base.yaml
+  -> 阶段配置，例如 recall.yaml / rank.yaml
+  -> debug.yaml 或 full.yaml
+  -> 命令行参数
+```
+
+本地 16 核 CPU、24 GB 内存环境只需要跑通小样本 smoke test。全量训练建议迁移到 GPU 服务器后再执行。
+
+常用参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--debug` | 小样本调试模式 |
+| `--full` | 全量模式 |
+| `--device cpu|cuda|auto` | 指定运行设备 |
+| `--max-users` | 限制用户数 |
+| `--max-notes` | 限制笔记数 |
+| `--max-interactions` | 限制交互样本数 |
+| `--batch-size` | batch 大小 |
+| `--num-workers` | DataLoader worker 数 |
+| `--epochs` | 训练轮数 |
+| `--mixed-precision` | GPU 混合精度 |
+
+## 运行命令
+
+以下命令均在项目根目录执行。
+
+### 1. 检查数据 Schema
 
 ```bash
-conda run -n rs python scripts/00_inspect_dataset.py
+python scripts/inspect_dataset.py --debug
 ```
 
-输出：
+输出会保存到：
 
-- `outputs/schema_summary.json`
-- `outputs/sample_rows/`
-
-这个脚本会读取本地 parquet 文件，保存每个文件的路径、行数、列名、类型、样例行、嵌套/list 字段摘要。
+```text
+artifacts/processed/schema_summary.json
+```
 
 ### 2. 数据预处理
 
 ```bash
-conda run -n rs python scripts/01_prepare_data.py
+python scripts/prepare_data.py --debug --max-users 500 --max-notes 5000 --max-interactions 5000
 ```
 
-输出：
-
-- `data_processed/samples/train_interactions.parquet`
-- `data_processed/samples/test_interactions.parquet`
-- `data_processed/features/note_features.parquet`
-- `data_processed/features/user_features.parquet`
-- `data_processed/features/user_profiles.parquet`
-- `data_processed/mappings/id_mappings.json`
-
-主要工作：
+预处理会完成：
 
 - 展开 `rec_result_details_with_idx`
-- 生成点击、点赞、收藏、评论、分享、停留时长等标签
-- 构建用户历史序列
-- 构建 note_id/user_id 到内部连续 id 的映射
-- 生成用户画像和笔记画像
+- 构建曝光、点击、互动样本
+- 生成 `click_label`、`engage_label`、`relevance`
+- 构建用户 ID 和笔记 ID 映射
+- 预留默认 ID：未知用户和未知笔记均映射到 `0`
+- 构建用户历史行为序列
+- 拼接笔记特征和用户特征
 
-### 3. 多路召回
+主要输出：
+
+```text
+artifacts/processed/interactions.parquet
+artifacts/processed/training_features.parquet
+artifacts/processed/notes.parquet
+artifacts/processed/users.parquet
+artifacts/processed/user_history.parquet
+artifacts/processed/mappings/
+```
+
+### 3. 构建搜索召回索引
 
 ```bash
-conda run -n rs python scripts/02_build_recall.py
+python scripts/build_search_index.py --debug --max-notes 5000
+```
+
+当前搜索召回使用 BM25 + TF-IDF 混合检索：
+
+```text
+query -> BM25 + TF-IDF -> note title/content/taxonomy -> topK notes
 ```
 
 输出：
 
-- `data_processed/recalls/classic_recall.parquet`
-- `data_processed/recalls/merged_recall.parquet`
-- `data_processed/recalls/popular_itemcf.pkl`
+```text
+artifacts/indexes/search_index.joblib
+artifacts/indexes/search_tfidf.joblib
+```
 
-已实现召回：
-
-- 热门召回
-- ItemCF 召回
-- TF-IDF 文本召回
-
-文本召回默认在 debug 模式下限制笔记规模，避免本地 CPU 上过慢。迁移到服务器后可以通过配置调大。
-
-### 4. 双塔召回模型训练
+### 4. 训练 Two-Tower 召回模型
 
 ```bash
-conda run -n rs python scripts/03_train_twotower.py
+python scripts/train_twotower.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-users 20 --max-interactions 500
 ```
 
 输出：
 
-- `models/twotower/twotower.pt`
-- `models/twotower/train_metrics.json`
-- `data_processed/recalls/twotower_recall.parquet`
+```text
+artifacts/checkpoints/twotower.pt
+artifacts/indexes/twotower_candidates.joblib
+artifacts/metrics/twotower_train.json
+```
 
-模型思路：
-
-- 用户塔：用户 id embedding + 历史笔记 embedding 池化
-- 物品塔：笔记 id embedding
-- 训练目标：批内负样本 softmax
-- 训练后会生成双塔向量召回结果，并合并进 `merged_recall.parquet`
-
-### 5. DIN 风格排序模型训练
+### 5. 训练 DCN-lite 粗排模型
 
 ```bash
-conda run -n rs python scripts/04_train_ranker.py
+python scripts/train_dcn_lite.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-interactions 500
 ```
 
 输出：
 
-- `models/ranker/din_ranker.pt`
-- `models/ranker/train_metrics.json`
+```text
+artifacts/checkpoints/dcn_lite.pt
+artifacts/metrics/dcn_train.json
+```
 
-模型思路：
-
-- 对目标笔记和用户历史笔记做 embedding
-- 使用 DIN 风格注意力，让目标笔记对历史序列做兴趣提取
-- 拼接用户、目标、兴趣、位置、召回分等特征
-- 多目标预测 click、like、collect、comment、share、page_time
-
-如果某些标签不存在，训练逻辑会跳过不可用目标。
-
-### 6. 离线评估
+### 6. 训练 SIM 精排模型
 
 ```bash
-conda run -n rs python scripts/05_evaluate.py --max-eval-users 100
+python scripts/train_sim.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-interactions 500 --sim-last-n 5 --sim-top-k 5 --sim-max-history 50
+```
+
+SIM 当前设计：
+
+- `lastN`：用户最近 N 条点击或互动行为，表达短期兴趣
+- `topK`：从用户长历史中取与候选笔记最相关的 K 条行为，表达长期目标相关兴趣
+- 新用户或历史不足时使用 `note_id = 0` padding
+
+输出：
+
+```text
+artifacts/checkpoints/sim.pt
+artifacts/metrics/sim_train.json
+```
+
+### 7. DPP 重排
+
+```bash
+python scripts/rerank_dpp.py --debug --top-k 10
+```
+
+DPP 重排会结合：
+
+- 历史已看笔记过滤
+- 重复 `note_id` / `raw_note_idx` 过滤
+- 标题和正文近似重复过滤
+- taxonomy 相似度多样性约束
+
+输出：
+
+```text
+artifacts/processed/sample_dpp_rerank.parquet
+```
+
+### 8. 离线评测
+
+```bash
+python scripts/evaluate.py --debug --top-k 10 --max-interactions 1000
 ```
 
 输出：
 
-- `outputs/metrics/eval_summary.json`
-- `outputs/metrics/eval_summary.csv`
-- `data_processed/recalls/ranked_candidates.parquet`
-- `data_processed/recalls/ranked_reranked.parquet`
+```text
+artifacts/metrics/eval_summary.json
+```
 
-评估指标：
+当前评测包含：
 
-- AUC
-- LogLoss
-- Recall@K
-- HitRate@K
-- NDCG@K
-- MRR@K
-- 覆盖度
-- 平均推荐分
+- `HitRate@K`
+- `MRR@K`
+- `NDCG@K`
+- `Recall@K`
 
-评估对象：
+### 9. 单用户推荐
 
-- 热门召回
-- ItemCF 召回
-- 双塔召回
-- 合并召回
-- DIN 排序
-- DIN 排序 + 重排
-
-本地建议加 `--max-eval-users`，避免评估候选过多。
-
-### 7. 用户推荐命令
-
-随机选一个用户：
+无关键词 Feed 推荐：
 
 ```bash
-conda run -n rs python scripts/06_recommend_user.py --random_user --top_k 20
+python scripts/recommend_user.py --debug --random-user --top-k 5
 ```
 
 指定用户：
 
 ```bash
-conda run -n rs python scripts/06_recommend_user.py --user_id 6948 --top_k 20
+python scripts/recommend_user.py --debug --user-id 35 --top-k 5
 ```
 
-输出内容：
-
-- user_id
-- 用户画像摘要
-- 最近历史笔记
-- Top-N 推荐笔记
-- 标题和正文片段
-- 推荐分
-- 召回来源
-- 重排原因
-
-推荐结果也会保存到：
-
-```text
-outputs/recommendations/user_<id>_recommendations.parquet
-```
-
-## 可选 Streamlit 页面
-
-如果安装了 Streamlit，可以启动简单页面：
+带关键词搜索推荐：
 
 ```bash
-conda run -n rs streamlit run app.py
+python scripts/recommend_user.py --debug --user-id 0 --query "春季穿搭" --top-k 5
 ```
 
-页面包含：
+### 10. Streamlit Demo
 
-- 用户选择
-- 用户画像
-- 推荐结果
-- 推荐分
-- 召回来源
-- 重排说明
-
-这是可选功能，核心链路仍然以脚本为主。
-
-## 配置文件
-
-主要配置：
-
-- `configs/base.yaml`：默认路径、随机种子、debug 限制、评估限制
-- `configs/recall.yaml`：召回参数
-- `configs/twotower.yaml`：双塔训练参数
-- `configs/ranker.yaml`：排序模型训练参数
-- `configs/full.yaml`：关闭 debug 限制
-- `configs/gpu.yaml`：GPU 服务器配置示例
-
-自定义配置示例：
+安装 Streamlit 后可运行：
 
 ```bash
-conda run -n rs python scripts/04_train_ranker.py --config configs/gpu.yaml --epochs 8
+streamlit run app.py
 ```
 
-后加载的配置会覆盖先加载的配置。
+如果没有安装 Streamlit，请先使用命令行推荐脚本。
 
-## 重要产物目录
+## GPU 全量训练示例
 
-```text
-data_processed/
-  samples/      训练和测试样本
-  features/     用户、笔记、画像特征
-  mappings/     id 映射
-  recalls/      召回、排序、重排候选
-
-models/
-  twotower/     双塔模型
-  ranker/       DIN 排序模型
-
-outputs/
-  schema_summary.json
-  sample_rows/
-  metrics/
-  recommendations/
-  figures/
-```
-
-这些目录是运行产物，默认已加入 `.gitignore`，不要把大文件提交到仓库。
-
-## 多目标打分
-
-排序模型会按可用目标做加权融合。默认权重：
-
-```text
-click      0.45
-collect    0.25
-like       0.15
-comment    0.05
-share      0.05
-page_time  0.05
-```
-
-如果部分目标不存在，会对剩余目标重新归一化权重。
-
-## 重排规则
-
-当前实现的是轻量规则重排：
-
-- 过滤用户历史中已经看过的笔记
-- 类目多样性控制
-- 保留高分候选
-- 缺少作者、类目、标签等字段时不会崩溃
-
-后续可以继续加入作者去重、标签多样性、内容安全规则、新鲜度规则等。
-
-## 本地已经验证过的轻量链路
-
-当前代码已经在本地小规模跑通过：
+迁移到 GPU 服务器后，可以使用：
 
 ```bash
-conda run -n rs python scripts/00_inspect_dataset.py
-conda run -n rs python scripts/01_prepare_data.py
-conda run -n rs python scripts/02_build_recall.py
-conda run -n rs python scripts/03_train_twotower.py
-conda run -n rs python scripts/04_train_ranker.py
-conda run -n rs python scripts/05_evaluate.py --max-eval-users 50
-conda run -n rs python scripts/06_recommend_user.py --random_user --top_k 5
+python scripts/prepare_data.py --full
+python scripts/build_search_index.py --full
+python scripts/train_twotower.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
+python scripts/train_dcn_lite.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
+python scripts/train_sim.py --full --device cuda --epochs 5 --batch-size 1024 --mixed-precision --sim-last-n 50 --sim-top-k 100 --sim-max-history 1000
+python scripts/evaluate.py --full --top-k 100
 ```
 
-本地验证的目标是确认代码正确性，不追求最终指标。真正的训练质量需要在 GPU 服务器上放大数据量和训练轮数。
+## ID 映射与冷启动
 
-## 后续改进方向
+所有 ID 映射都预留默认值：
 
-- 加入 FAISS 做大规模向量检索
-- 加入更完整的搜索意图特征
-- 引入图像、多模态或文本预训练向量
-- 加入更丰富的用户画像特征
-- 增加排序模型校准
-- 增加实验配置管理和指标对比报告
-- 增加更细的重排策略与业务规则
+| 类型 | 默认 ID | 说明 |
+| --- | --- | --- |
+| 用户 | `0` | 未知用户、新用户、缺失用户 |
+| 笔记 | `0` | 未知笔记、新笔记、缺失笔记 |
+| 类目 | `0` | 未知类目、缺失类目 |
+| query/token | `0` | 空 query 或未知 token |
+
+真实数据 ID 从 `1` 开始映射。模型 embedding 中的 `0` 作为 padding / unknown 使用。
+
+冷启动策略：
+
+- 新用户有 query：走搜索召回
+- 新用户无 query：走热门或其他 fallback 候选
+- 新笔记：先用默认 note ID，并结合文本、类目和统计特征参与排序
+- 历史不足：使用 `note_id = 0` padding
+
+## 项目结构
+
+```text
+RedBookRec/
+  app.py
+  requirements.txt
+  AGENTS.md
+  README.md
+  configs/
+  dataset/
+  artifacts/
+  redbookrec/
+    config.py
+    data.py
+    features.py
+    metrics.py
+    models.py
+    recommend.py
+    rerank.py
+    search.py
+    train_utils.py
+  scripts/
+    inspect_dataset.py
+    prepare_data.py
+    build_search_index.py
+    train_twotower.py
+    train_dcn_lite.py
+    train_sim.py
+    rerank_dpp.py
+    evaluate.py
+    recommend_user.py
+```
+
+## 当前状态
+
+当前版本已经完成一条 debug 小样本链路：
+
+```text
+schema inspect
+  -> data prepare
+  -> BM25 + TF-IDF search recall
+  -> Two-Tower recall
+  -> DCN-lite
+  -> SIM
+  -> DPP
+  -> evaluate
+  -> recommend_user
+```
+
+后续可以继续增强：
+
+- Faiss ANN 检索
+- 更完整的负采样策略
+- 更强的 SIM topK 历史检索
+- 更精细的多任务损失权重与目标校准
+- 多模态图片特征

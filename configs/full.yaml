@@ -1,12 +1,28 @@
-debug:
-  enabled: false
-
 runtime:
+  mode: full
   device: auto
+  batch_size: 4096
+  epochs: 10
+  num_workers: 8
+  mixed_precision: true
 
-data:
-  history_max_len: 30
+limits:
+  max_users: null
+  max_notes: null
+  max_interactions: null
+  max_history: 1000
 
-evaluation:
-  max_users:
-  ranker_candidates_per_user: 300
+search:
+  top_k: 500
+
+twotower:
+  embedding_dim: 128
+  hidden_dims: [256, 128]
+  negatives_per_positive: 5
+
+rank:
+  dcn_hidden_dims: [256, 128, 64]
+  sim_hidden_dims: [256, 128, 64]
+  sim_last_n: 50
+  sim_top_k: 100
+  sim_max_history: 1000

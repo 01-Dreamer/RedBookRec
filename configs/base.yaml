@@ -1,26 +1,45 @@
-seed: 2025
+project:
+  name: RedBookRec
 
 paths:
   dataset_dir: dataset
-  processed_dir: data_processed
-  outputs_dir: outputs
-  models_dir: models
-
-debug:
-  enabled: true
-  max_users: 5000
-  max_notes: 50000
-  max_interactions: 200000
-
-data:
-  history_max_len: 20
-  min_positive_label: click
-  page_time_clip: 300.0
+  artifacts_dir: artifacts
+  processed_dir: artifacts/processed
+  runs_dir: artifacts/runs
+  indexes_dir: artifacts/indexes
+  checkpoints_dir: artifacts/checkpoints
+  metrics_dir: artifacts/metrics
+  logs_dir: artifacts/logs
 
 runtime:
+  seed: 2025
+  mode: debug
   device: auto
   num_workers: 0
+  batch_size: 512
+  epochs: 1
+  mixed_precision: false
+
+limits:
+  max_users: 2000
+  max_notes: 50000
+  max_interactions: 200000
+  max_history: 200
+
+id_mapping:
+  default_user_id: 0
+  default_note_id: 0
+  default_category_id: 0
+  default_query_id: 0
+
+data:
+  recommendation_train: recommendation_train/train-00000-of-00001.parquet
+  recommendation_test: recommendation_test/train-00000-of-00001.parquet
+  user_feat: user_feat/train-00000-of-00001.parquet
+  notes_glob: notes/train-*.parquet
+  search_train: search_train/train-00000-of-00001.parquet
+  search_test: search_test/train-00000-of-00001.parquet
 
 evaluation:
-  max_users: 1000
-  ranker_candidates_per_user: 80
+  top_k: [5, 10, 20]
+  recall_k: [50, 100, 200, 500]

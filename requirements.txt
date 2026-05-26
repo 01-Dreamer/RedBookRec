@@ -1,11 +1,10 @@
 pandas
-numpy
 pyarrow
+numpy
 scikit-learn
 torch
 tqdm
 pyyaml
-rich
-rank-bm25
 scipy
+joblib
 streamlit

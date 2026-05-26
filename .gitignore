@@ -1,6 +1,4 @@
 dataset/
-data_processed/
-models/
-outputs/
+artifacts/
 __pycache__/
 *.pyc

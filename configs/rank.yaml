@@ -1,0 +1,17 @@
+rank:
+  learning_rate: 0.001
+  weight_decay: 0.000001
+  dcn_cross_layers: 2
+  dcn_hidden_dims: [128, 64]
+  dropout: 0.1
+  sim_hidden_dims: [128, 64]
+  sim_attention_dim: 64
+  sim_last_n: 20
+  sim_top_k: 20
+  sim_max_history: 200
+  sim_history_types:
+    - click
+    - like
+    - collect
+    - comment
+    - share

@@ -1,8 +1,0 @@
-embedding_dim: 64
-hidden_dims: [192, 96, 48]
-dropout: 0.15
-batch_size: 512
-epochs: 1
-learning_rate: 0.001
-max_train_samples: 100000
-max_seq_len: 20
