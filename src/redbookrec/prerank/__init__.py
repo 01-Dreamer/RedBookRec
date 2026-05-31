@@ -1,3 +1,3 @@
-from .dcn_lite import DCNLite
+from .dcn import DCN
 
-__all__ = ["DCNLite"]
+__all__ = ["DCN"]

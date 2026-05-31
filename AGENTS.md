@@ -27,7 +27,7 @@ RedBookRec/
 
 ```text
 召回：Search Recall + Dual-Tower Recall
-  → 粗排：DCN-lite
+  → 粗排：DCN
   → 精排：SIM
   → 重排：DPP
   → TopK 推荐列表
@@ -299,7 +299,7 @@ RedBookRec/
 │
 ├── configs/
 │   ├── recall.yaml
-│   ├── dcn_lite.yaml
+│   ├── dcn.yaml
 │   ├── sim.yaml
 │   └── dpp.yaml
 │
@@ -384,7 +384,7 @@ RedBookRec/
         ├── prerank/
         │   ├── __init__.py
         │   ├── dataset.py
-        │   ├── dcn_lite.py
+        │   ├── dcn.py
         │   ├── trainer.py
         │   └── inference.py
         ├── rank/
@@ -549,7 +549,7 @@ hybrid_recall:
 还需要生成：
 
 ```text
-configs/dcn_lite.yaml
+configs/dcn.yaml
 configs/sim.yaml
 configs/dpp.yaml
 ```
@@ -736,19 +736,19 @@ hybrid_score = w_dual * norm(dual_score) + w_search * norm(search_score)
 
 ---
 
-## 9. 阶段二：粗排 DCN-lite
+## 9. 阶段二：粗排 DCN
 
 配置：
 
 ```text
-configs/dcn_lite.yaml
+configs/dcn.yaml
 ```
 
 脚本：
 
 ```bash
-python scripts/train_prerank.py --config configs/dcn_lite.yaml
-python scripts/infer_prerank.py --config configs/dcn_lite.yaml
+python scripts/train_prerank.py --config configs/dcn.yaml
+python scripts/infer_prerank.py --config configs/dcn.yaml
 ```
 
 输入：
@@ -764,7 +764,7 @@ dataset/user_feat/*.parquet
 模型：
 
 ```text
-DCN-lite = embedding layer + 1~2 cross layers + shallow MLP
+DCN = embedding layer + 1~2 cross layers + shallow MLP
 ```
 
 特征：
@@ -926,7 +926,7 @@ label_click
 
 ```bash
 python scripts/evaluate.py --config configs/recall.yaml --stage recall
-python scripts/evaluate.py --config configs/dcn_lite.yaml --stage prerank
+python scripts/evaluate.py --config configs/dcn.yaml --stage prerank
 python scripts/evaluate.py --config configs/sim.yaml --stage rank
 python scripts/evaluate.py --config configs/dpp.yaml --stage rerank
 ```
@@ -1116,7 +1116,7 @@ Codex 请按以下顺序实现：
 4. 更新 `.gitignore`。
 5. 创建配置文件：
    - `configs/recall.yaml`
-   - `configs/dcn_lite.yaml`
+   - `configs/dcn.yaml`
    - `configs/sim.yaml`
    - `configs/dpp.yaml`
 6. 实现公共工具：
@@ -1146,7 +1146,7 @@ Codex 请按以下顺序实现：
    - `recall/inference.py`
 12. 实现召回训练、推理、评估脚本。
 13. 实现 Search Recall 与 Hybrid Recall。
-14. 实现 DCN-lite 粗排。
+14. 实现 DCN 粗排。
 15. 实现 SIM 精排。
 16. 实现 DPP 重排。
 17. 最后补充和完善中文 `README.md`。

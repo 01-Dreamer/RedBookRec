@@ -8,5 +8,5 @@ import torch
 def train_prerank_placeholder(cfg: dict) -> dict:
     path = Path(cfg["paths"]["checkpoint"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"kind": "dcn_lite_placeholder", "config": cfg}, path)
+    torch.save({"kind": "dcn_placeholder", "config": cfg}, path)
     return {"checkpoint": str(path)}

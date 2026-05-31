@@ -14,7 +14,7 @@ class CrossLayer(nn.Module):
         return x0 * torch.sum(x * self.weight, dim=-1, keepdim=True) + self.bias + x
 
 
-class DCNLite(nn.Module):
+class DCN(nn.Module):
     def __init__(self, num_users: int, num_notes: int, dense_dim: int = 4, embed_dim: int = 32, dropout: float = 0.1):
         super().__init__()
         self.user_embedding = nn.Embedding(num_users, embed_dim, padding_idx=0)

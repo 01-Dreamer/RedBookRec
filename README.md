@@ -5,7 +5,7 @@ RedBookRec 是基于 Qilin 小红书数据集的 text-only 推荐系统首版实
 ```text
 Search Recall + Dual-Tower Recall
   -> Hybrid Recall
-  -> DCN-lite 粗排
+  -> DCN 粗排
   -> SIM 精排
   -> DPP 重排
   -> TopK 推荐列表
@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ## 目录结构
 
 ```text
-configs/                 # recall、dcn_lite、sim、dpp 配置
+configs/                 # recall、dcn、sim、dpp 配置
 scripts/                 # 数据分析、训练、推理、评估入口
 src/redbookrec/          # 推荐系统源码
 data_cache/              # 预处理数据和中间缓存
@@ -84,12 +84,12 @@ python scripts/merge_recall.py --config configs/recall.yaml
 python scripts/evaluate.py --config configs/recall.yaml --stage hybrid_recall
 ```
 
-DCN-lite 粗排：
+DCN 粗排：
 
 ```bash
-python scripts/train_prerank.py --config configs/dcn_lite.yaml --smoke-test
-python scripts/infer_prerank.py --config configs/dcn_lite.yaml
-python scripts/evaluate.py --config configs/dcn_lite.yaml --stage prerank
+python scripts/train_prerank.py --config configs/dcn.yaml --smoke-test
+python scripts/infer_prerank.py --config configs/dcn.yaml
+python scripts/evaluate.py --config configs/dcn.yaml --stage prerank
 ```
 
 SIM 精排：
@@ -114,7 +114,7 @@ python scripts/evaluate.py --config configs/dpp.yaml --stage rerank
 | Dual-Tower Recall | `outputs/recall/test_top1000.parquet` |
 | Search Recall | `outputs/search_recall/test_top1000.parquet` |
 | Hybrid Recall | `outputs/hybrid_recall/test_top1000.parquet` |
-| DCN-lite | `outputs/prerank/test_top200.parquet` |
+| DCN | `outputs/prerank/test_top200.parquet` |
 | SIM | `outputs/rank/test_top50.parquet` |
 | DPP | `outputs/rerank/test_top10.parquet` |
 
@@ -122,7 +122,7 @@ python scripts/evaluate.py --config configs/dpp.yaml --stage rerank
 
 - 首版是 text-only，不读取 Qilin 图片和视频原始文件。
 - 双塔召回使用 in-batch negative，默认配置面向 CPU smoke test。
-- DCN-lite、SIM、DPP 已提供可运行骨架和轻量策略，后续可替换为更强训练逻辑。
+- DCN、SIM、DPP 已提供可运行骨架和轻量策略，后续可替换为更强训练逻辑。
 - 默认配置优先小样本验证，不代表全量最优效果。
 
 ## 后续计划
