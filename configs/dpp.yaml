@@ -1,0 +1,16 @@
+seed: 2025
+
+data:
+  note_text_path: data_cache/notes/note_text.parquet
+  input_path: outputs/rank/test_top50.parquet
+
+rerank:
+  lambda_diversity: 0.2
+  top_k: 10
+
+infer:
+  input_path: outputs/rank/test_top50.parquet
+  output_path: outputs/rerank/test_top10.parquet
+
+paths:
+  metrics: outputs/rerank/rerank_metrics.json

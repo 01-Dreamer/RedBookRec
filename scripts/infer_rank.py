@@ -1,0 +1,21 @@
+from __future__ import annotations
+
+import argparse
+
+import _bootstrap  # noqa: F401
+
+from redbookrec.rank.inference import infer_rank
+from redbookrec.utils.config import load_config
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/sim.yaml")
+    args = parser.parse_args()
+    cfg = load_config(args.config)
+    out = infer_rank(cfg)
+    print(f"saved_rank_rows={len(out)} path={cfg['infer']['output_path']}")
+
+
+if __name__ == "__main__":
+    main()

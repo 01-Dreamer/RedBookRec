@@ -1,10 +1,9 @@
+numpy
 pandas
 pyarrow
-numpy
 scikit-learn
-torch
 tqdm
 pyyaml
-scipy
-joblib
-streamlit
+torch
+faiss-cpu
+rank-bm25

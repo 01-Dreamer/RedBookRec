@@ -1,454 +1,1165 @@
 # AGENTS.md
 
-## Project Goal
+本文件用于指导 Codex 在 `RedBookRec` 项目中实现完整推荐系统。Codex 需要按照本文要求创建项目目录、实现代码、生成配置文件，并最终生成中文 `README.md`、`requirements.txt` 和 `.gitignore`。
 
-RedBookRec is a Xiaohongshu-style recommendation system built on the Qilin dataset. The target architecture is a four-stage industrial recommendation pipeline: Two-Tower recall, DCN-lite pre-ranking, SIM fine-ranking, and DPP re-ranking. The first milestone is a runnable version of this pipeline with data preparation, offline evaluation, and a simple demo app.
-
-## Runtime Environment
-
-Use the existing `rs` conda environment for this project.
+当前项目根目录：
 
 ```bash
-conda activate rs
+/home/failedman/RedBookRec
 ```
 
-The expected prompt is:
-
-```text
-(rs) failedman@Ubuntu:~/RedBookRec$
-```
-
-When running commands from automation or scripts where shell activation is inconvenient, prefer:
-
-```bash
-conda run -n rs python ...
-conda run -n rs streamlit run app.py
-```
-
-Avoid installing dependencies into `base`. If new packages are needed, install them into `rs` and record them in `requirements.txt`.
-
-## Local Hardware and Run Modes
-
-The current development machine has about 16 CPU cores and 24 GB memory. Use it for smoke tests, schema checks, small-sample preprocessing, and short training runs only. Do not require full-dataset training to pass during local development.
-
-All data and training scripts must provide CPU/GPU-friendly runtime controls:
-
-- `--debug`: run a small, fast sample for local validation.
-- `--device cpu|cuda|auto`: choose CPU, GPU, or automatic device selection.
-- `--max-users`: limit the number of users during local tests.
-- `--max-notes`: limit the number of notes during local tests.
-- `--max-interactions`: limit the number of interaction rows during local tests.
-- `--batch-size`: allow smaller CPU batches and larger GPU batches.
-- `--num-workers`: allow safe dataloader parallelism; default should not exceed local CPU capacity.
-- `--epochs`: allow smoke-test runs with 1 epoch.
-- `--mixed-precision`: optional GPU-only acceleration; must be disabled automatically on CPU.
-
-Default behavior should be development-friendly and runnable on CPU. Full training should be explicitly requested through config or command-line flags.
-
-Example local smoke-test commands:
-
-```bash
-conda run -n rs python scripts/prepare_data.py --debug --max-users 2000 --max-notes 50000 --max-interactions 200000
-conda run -n rs python scripts/build_search_index.py --debug --max-notes 50000
-conda run -n rs python scripts/train_twotower.py --debug --device cpu --epochs 1 --batch-size 512
-conda run -n rs python scripts/train_dcn_lite.py --debug --device cpu --epochs 1 --batch-size 512
-conda run -n rs python scripts/train_sim.py --debug --device cpu --epochs 1 --batch-size 256
-conda run -n rs python scripts/evaluate.py --debug --top-k 20
-```
-
-Example GPU-server commands:
-
-```bash
-conda run -n rs python scripts/prepare_data.py --full
-conda run -n rs python scripts/build_search_index.py --full
-conda run -n rs python scripts/train_twotower.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
-conda run -n rs python scripts/train_dcn_lite.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
-conda run -n rs python scripts/train_sim.py --full --device cuda --epochs 5 --batch-size 1024 --mixed-precision
-conda run -n rs python scripts/evaluate.py --full --top-k 100
-```
-
-## Global Configuration
-
-Use a unified config system for the whole project. Do not scatter hard-coded paths, batch sizes, device choices, sample limits, model dimensions, or SIM parameters across scripts.
-
-Recommended config files:
-
-```text
-configs/
-  base.yaml          shared defaults for all stages
-  debug.yaml         local smoke-test overrides
-  full.yaml          full-data training overrides
-  recall.yaml        search recall and Two-Tower settings
-  rank.yaml          DCN-lite and SIM settings
-  rerank.yaml        DPP settings
-```
-
-Every script should accept:
-
-- `--config`: one or more YAML config files.
-- `--debug`: shortcut for loading debug-friendly limits.
-- `--full`: shortcut for full-data mode.
-- command-line overrides for important runtime fields, such as `--device`, `--batch-size`, `--epochs`, `--max-users`, `--max-notes`, `--max-interactions`, `--sim-last-n`, and `--sim-top-k`.
-
-Precedence order:
-
-```text
-base.yaml
-  -> stage config, such as recall.yaml or rank.yaml
-  -> debug.yaml or full.yaml
-  -> explicit command-line overrides
-```
-
-The merged config should be saved with each run under `artifacts/runs/<run_id>/config.yaml` so results can be reproduced.
-
-The config must cover at least:
-
-- paths: raw dataset, processed data, artifacts, indexes, checkpoints, metrics, logs,
-- runtime: seed, mode, device, num workers, batch size, epochs, mixed precision,
-- debug/full limits: max users, max notes, max interactions, max history length,
-- ID mapping: reserved default IDs and unknown handling,
-- search recall: text fields, index type, top K, tokenizer options,
-- Two-Tower: embedding dimension, hidden sizes, negative sampling, ANN settings,
-- DCN-lite: feature groups, cross layers, MLP layers, dropout,
-- SIM: `lastN`, `topK`, max history, history behavior types, attention dimensions,
-- DPP: final top K, diversity weight, similarity feature type,
-- evaluation: metrics, K values, split names, output paths.
-
-Example commands:
-
-```bash
-conda run -n rs python scripts/prepare_data.py --config configs/base.yaml configs/debug.yaml
-conda run -n rs python scripts/train_twotower.py --config configs/base.yaml configs/recall.yaml configs/debug.yaml --device cpu
-conda run -n rs python scripts/train_sim.py --config configs/base.yaml configs/rank.yaml configs/debug.yaml --sim-last-n 20 --sim-top-k 20
-conda run -n rs python scripts/evaluate.py --config configs/base.yaml configs/debug.yaml
-```
-
-## Dataset Layout
-
-The local Qilin dataset is under `dataset/`.
-
-Important splits:
-
-- `dataset/recommendation_train/`: training logs for recommendation ranking.
-- `dataset/recommendation_test/`: test logs for offline evaluation.
-- `dataset/notes/`: note corpus with title, content, category, engagement, and media metadata.
-- `dataset/user_feat/`: user profile and dense user features.
-- `dataset/search_train/` and `dataset/search_test/`: search behavior, useful for search-aware recommendation later.
-- `dataset/dqa/`: question-answering/RAG data, useful in later explanation or assistant features.
-
-## Target Recommendation Pipeline
-
-Use the following four-stage design for Qilin-based RedBookRec:
-
-| Stage | Algorithm | Role |
-| --- | --- | --- |
-| Recall | Search Recall + Two-Tower | Use keyword search when the user provides a query, otherwise retrieve personalized feed candidates from the large note corpus. |
-| Pre-rank | DCN-lite | Use lightweight feature crossing to filter weak candidates efficiently. |
-| Fine-rank | SIM | Use long user behavior history to estimate detailed interest in each candidate note. |
-| Re-rank | DPP | Select a high-quality and diverse final recommendation list from high-score candidates. |
-
-This design is suitable for Qilin because the dataset contains note metadata, user features, recent clicked notes, recommendation exposure logs, click and engagement labels, query context, search logs, and timestamps. For SIM, build longer user behavior sequences from `recommendation_train` by grouping clicked or engaged notes by `user_idx` and sorting by request or interaction timestamp.
-
-## SIM Fine-Ranking Design
-
-Use SIM as the fine-ranking model after DCN-lite. SIM must explicitly combine recent behavior and long-history target-aware retrieval:
-
-1. `lastN` recent behavior sequence
-   - Keep the most recent `N` clicked or engaged notes for each user.
-   - This branch captures short-term interest and session-level preference.
-   - Suggested local default: `lastN = 20`.
-   - Suggested full-training range: `lastN = 50` to `100`.
-
-2. `topK` target-aware long-history sequence
-   - Build a longer user behavior sequence from `recommendation_train`.
-   - For each candidate note, retrieve the top `K` historical notes most similar to the candidate.
-   - Similarity can start with note embedding dot product, taxonomy overlap, or text embedding similarity.
-   - This branch captures long-term but candidate-relevant interest.
-   - Suggested local default: `topK = 20`.
-   - Suggested full-training range: `topK = 50` to `100`.
-
-3. Candidate-aware interest modeling
-   - Use the candidate note embedding as the target query.
-   - Apply attention over both `lastN` and `topK` behavior embeddings.
-   - Concatenate target note features, user features, context features, `lastN` interest vector, and `topK` interest vector.
-   - Feed the merged vector into an MLP to predict click or multi-task engagement scores.
-
-4. Sequence defaults and robustness
-   - If the user history is shorter than `lastN`, pad with `note_id = 0`.
-   - If long-history retrieval returns fewer than `topK`, pad with `note_id = 0`.
-   - If the user is new or unknown, both sequences should be empty/padded and the model should rely on default user features, context, and candidate features.
-
-SIM-related scripts must expose these parameters:
-
-- `--sim-last-n`: number of most recent behavior notes.
-- `--sim-top-k`: number of target-aware long-history notes.
-- `--sim-max-history`: maximum stored behavior length per user before topK retrieval.
-- `--sim-history-types`: behavior types used to build history, such as click, like, collect, comment, and share.
-
-Example local SIM command:
-
-```bash
-conda run -n rs python scripts/train_sim.py --debug --device cpu --epochs 1 --batch-size 256 --sim-last-n 20 --sim-top-k 20 --sim-max-history 200
-```
-
-Example GPU SIM command:
-
-```bash
-conda run -n rs python scripts/train_sim.py --full --device cuda --epochs 5 --batch-size 1024 --mixed-precision --sim-last-n 50 --sim-top-k 100 --sim-max-history 1000
-```
-
-The recall stage must support two request modes:
-
-1. Search recommendation mode
-   - Triggered when the user provides a non-empty keyword or query.
-   - Use keyword-driven recall as the primary channel.
-   - Return top candidate notes matching the query from title, content, taxonomy, or precomputed text index.
-   - Start with BM25 or TF-IDF, then optionally add dense query-note retrieval using DPR-style embeddings.
-   - Qilin `search_train`, `search_test`, `bm25_results`, and `dpr_results` can be used to validate and improve this mode.
-
-2. Non-search feed recommendation mode
-   - Triggered when the user does not provide a query.
-   - Use Two-Tower personalized recall as the primary channel.
-   - Use user profile, dense user features, recent clicks, reconstructed long behavior sequence, and note metadata.
-   - Optional fallback channels can include Popular, ItemCF, and category-based recall.
-
-## Recommended MVP
-
-Build the first version in four layers:
-
-1. Data preparation
-   - Read Qilin parquet files.
-   - Expand `rec_result_details_with_idx` into one row per exposed note.
-   - Join note metadata from `notes` and user metadata from `user_feat`.
-   - Create labels such as `click_label` and `engage_label`.
-   - Reconstruct user behavior sequences for Two-Tower and SIM.
-   - Build stable ID mappings for users and notes with reserved default IDs for missing, unknown, or new entities.
-
-2. Recall
-   - Implement search recall for keyword-driven recommendation.
-   - Implement Two-Tower retrieval with a user tower and a note tower for non-search feed recommendation.
-   - User tower inputs: user profile, dense user features, query context, and recent or reconstructed clicked-note sequence.
-   - Note tower inputs: note ID, taxonomy, note type, text features, and engagement statistics.
-   - Train with clicked or engaged notes as positives and exposed-but-not-clicked or sampled notes as negatives.
-   - At request time, route non-empty queries to search recall and empty-query requests to Two-Tower recall.
-
-3. Pre-rank and fine-rank
-   - Use DCN-lite for fast feature crossing over user, item, context, and recall-source features.
-   - Use SIM for fine-ranking with long user behavior history and candidate-aware interest matching.
-   - SIM must use both `lastN` recent behaviors and `topK` target-aware long-history behaviors.
-   - Keep model outputs calibrated enough for downstream re-ranking.
-
-4. Re-rank and demo app
-   - Apply DPP to balance score quality and diversity.
-   - Use note taxonomy or text embeddings as item similarity features for DPP.
-   - Implement `app.py` as the first user-facing entrypoint.
-   - Input: `user_idx`, optional query/context, and `top_k`.
-   - Output: recommended notes with title, content snippet, category, score, and a short reason.
-
-## Offline Evaluation
-
-Evaluate each stage separately and the full pipeline end-to-end.
-
-1. Recall evaluation
-   - Evaluate whether Two-Tower candidates cover clicked or engaged notes.
-   - Evaluate whether search recall covers clicked or engaged notes for query requests.
-   - Track `Recall@50`, `Recall@100`, `Recall@200`, and `Recall@500`.
-
-2. Ranking evaluation
-   - Evaluate on `recommendation_test`.
-   - Track `Recall@K`, `HitRate@K`, `MRR@K`, and `NDCG@K`.
-   - For CTR-style labels, also track `AUC` and `LogLoss`.
-
-3. Re-ranking evaluation
-   - Track final list quality and diversity together.
-   - Use `NDCG@10`, `HitRate@10`, category coverage, intra-list diversity, and duplicate/category concentration checks.
-
-## ID Mapping and Cold-Start Defaults
-
-The project must handle missing IDs, unseen users, unseen notes, and newly created entities without crashing.
-
-Reserve default IDs in every categorical mapping:
-
-| Entity | Reserved ID | Meaning |
-| --- | --- | --- |
-| User | `0` | Unknown, missing, or new user. |
-| Note | `0` | Unknown, missing, or new note. |
-| Category/taxonomy | `0` | Unknown or missing category. |
-| Query/token bucket | `0` | Unknown or empty query token. |
-
-Real dataset IDs should start from `1` after mapping. Never use raw `user_idx` or `note_idx` directly as embedding indices unless the mapping explicitly reserves `0`.
-
-Required behavior:
-
-- If `user_idx` is missing or not found in the user mapping, map it to `user_id = 0`.
-- If `note_idx` is missing or not found in the note mapping, map it to `note_id = 0`.
-- If a user has no history, use an empty sequence padded with `note_id = 0`.
-- If a note has missing text, category, or statistics, fill with safe defaults instead of dropping the request.
-- If a new user arrives in non-search feed mode, Two-Tower should use `user_id = 0` plus available context and fall back to popular/category/search-derived candidates when needed.
-- If a new note arrives, use `note_id = 0` plus available content/category/statistical features until the ID mapping and embeddings are refreshed.
-
-Cold-start fallback policy:
-
-1. New user with query
-   - Use search recall from the keyword.
-   - Apply DCN-lite/SIM with default user ID and available context.
-
-2. New user without query
-   - Use popular, category, or location/context fallback recall.
-   - Use default user ID and empty history.
-
-3. New note
-   - Use default note ID.
-   - Score with available note text, taxonomy, and statistics.
-   - Allow it into recall only through search, category, popular/new-item exploration, or refreshed ANN indexes.
-
-4. Missing IDs in training or evaluation
-   - Map to reserved defaults.
-   - Log counts of unknown users, unknown notes, and missing categories.
-   - Do not silently discard rows unless the label itself is unusable.
-
-## Suggested Project Structure
+当前已有内容：
 
 ```text
 RedBookRec/
-  app.py
-  requirements.txt
-  AGENTS.md
-  configs/
-    base.yaml
-    debug.yaml
-    full.yaml
-    recall.yaml
-    rank.yaml
-    rerank.yaml
-  dataset/
-  artifacts/
-  redbookrec/
-    __init__.py
-    config.py
-    data.py
-    features.py
-    metrics.py
-    models.py
-    recommend.py
-    rerank.py
-    search.py
-    train_utils.py
-  scripts/
-    inspect_dataset.py
-    prepare_data.py
-    build_search_index.py
-    train_twotower.py
-    train_dcn_lite.py
-    train_sim.py
-    rerank_dpp.py
-    evaluate.py
-    recommend_user.py
+├── dataset/
+├── .git/
+└── .gitignore
 ```
 
-Keep the first implementation small and runnable before adding deeper models.
+注意：用户只需要本文件作为给 Codex 的总指令文件。`README.md`、`requirements.txt`、`.gitignore` 不需要现在手写给用户，由 Codex 在实现项目时根据本文要求生成。其中 `README.md` 必须使用中文。
 
-## Implementation Plan
+---
 
-### Phase 1: Inspect and Prepare Data
+## 1. 项目目标
 
-- Confirm parquet schemas using `pandas` or `pyarrow`.
-- Add the global config files before implementing stage scripts.
-- Load config consistently in all scripts and save the merged config for each run.
-- Build a prepared interaction table from `recommendation_train`.
-- Build `user_id` and `note_id` mappings with `0` reserved for unknown/default IDs.
-- Save unknown-ID statistics during preprocessing.
-- Save prepared artifacts under `artifacts/`.
-- Keep raw Qilin files unchanged.
+基于 Qilin 小红书数据集，实现一个四阶段推荐系统：
 
-Expected commands:
+```text
+召回：Search Recall + Dual-Tower Recall
+  → 粗排：DCN-lite
+  → 精排：SIM
+  → 重排：DPP
+  → TopK 推荐列表
+```
+
+当前版本优先实现 **text-only** 版本，不使用图片和视频原始数据。Qilin 的图片和视频数据体量较大，首版只使用文本、ID、类别特征、统计特征和用户特征，确保完整流程可以在当前机器上跑通。
+
+---
+
+## 2. 运行环境与硬件限制
+
+### 2.1 Conda 环境
+
+必须使用用户已有 conda 环境：
 
 ```bash
 conda activate rs
-python scripts/prepare_data.py
 ```
 
-or:
+不要新建 conda 环境。所有脚本默认在项目根目录执行：
 
 ```bash
-conda run -n rs python scripts/prepare_data.py
+cd ~/RedBookRec
+conda activate rs
 ```
 
-### Phase 2: Build Baseline Recommender
-
-- Implement search recall and Two-Tower recall first.
-- For search recall, build a text index over note title, content, and taxonomy fields.
-- Build user and note embeddings.
-- Use approximate nearest neighbor search or batched dot-product retrieval for the first version.
-- Return candidate note IDs with recall scores and recall source metadata.
-- Route requests by query presence: keyword search uses search recall; empty-query feed uses Two-Tower recall.
-
-Expected command:
+若缺依赖，Codex 应创建或更新 `requirements.txt`，并提示用户执行：
 
 ```bash
-conda run -n rs python scripts/build_search_index.py
-conda run -n rs python scripts/train_twotower.py
+pip install -r requirements.txt
 ```
 
-### Phase 3: Pre-rank and Fine-rank
+### 2.2 当前硬件
 
-- Train DCN-lite on exposed candidates with click or engagement labels.
-- Train SIM with reconstructed long user behavior sequences.
-- In SIM, combine `lastN` recent behaviors with candidate-aware `topK` long-history retrieval.
-- Use DCN-lite to reduce candidates, then SIM to produce high-quality ranking scores.
+用户当前开发机器为：
 
-Expected command:
+```text
+CPU: 16 cores
+RAM: 24 GB
+GPU: 无独立 GPU，仅集成显卡
+```
+
+因此实现代码时必须遵守：
+
+1. 首要目标是 **训练、推理、评估流程能跑通**，不是完整跑完全量大规模训练。
+2. 默认配置必须适合 CPU 小样本 smoke test。
+3. 不要默认要求独立 GPU。
+4. 不要默认端到端训练 BERT、Qwen、VLM 等大模型。
+5. 不读取图片和视频原始文件。
+6. FAISS 默认使用 `faiss-cpu`。
+7. 大文件必须分列读取、分批处理。
+8. 所有阶段都必须支持小样本参数，便于 CPU 验证。
+
+所有耗时脚本都要支持类似参数：
+
+```text
+--smoke-test
+--max-notes
+--max-requests
+--max-train-samples
+--max-eval-samples
+```
+
+默认训练配置建议：
+
+```yaml
+train:
+  device: auto
+  batch_size: 64
+  num_workers: 0
+```
+
+代码中统一使用：
+
+```python
+def get_device(device: str):
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
+```
+
+将来用户换到 GPU 机器时，只需修改配置：
+
+```yaml
+train:
+  device: cuda
+```
+
+不要在代码中写死 CPU 或 CUDA。
+
+---
+
+## 3. 数据集概览
+
+项目数据位于：
+
+```text
+dataset/
+├── dqa/
+├── notes/
+├── recommendation_train/
+├── recommendation_test/
+├── search_train/
+├── search_test/
+└── user_feat/
+```
+
+### 3.1 表级概览
+
+| 数据集 | 行数 | 主要作用 |
+|---|---:|---|
+| `dqa` | 6,972 | DQA/RAG 相关，推荐主流程首版不用 |
+| `notes` | 1,983,938 | 全量 note 物料库，召回、排序和重排都要用 |
+| `recommendation_train` | 83,437 | 推荐训练请求 |
+| `recommendation_test` | 11,115 | 推荐测试请求 |
+| `search_train` | 44,024 | 搜索训练请求，可用于 Search Recall |
+| `search_test` | 6,192 | 搜索测试请求，可用于 Search Recall 评估 |
+| `user_feat` | 15,482 | 用户画像和 dense features |
+
+### 3.2 notes 字段
+
+`notes` 字段：
+
+```text
+note_title, note_content, note_type,
+video_duration, video_height, video_width,
+image_num, content_length, commercial_flag,
+taxonomy1_id, taxonomy2_id, taxonomy3_id,
+imp_num, imp_rec_num, imp_search_num,
+click_num, click_rec_num, click_search_num,
+like_num, collect_num, comment_num, share_num,
+screenshot_num, hide_num,
+rec_like_num, rec_collect_num, rec_comment_num, rec_share_num, rec_follow_num,
+search_like_num, search_collect_num, search_comment_num, search_share_num, search_follow_num,
+accum_like_num, accum_collect_num, accum_comment_num,
+view_time, rec_view_time, search_view_time, valid_view_times, full_view_times,
+note_idx, image_path
+```
+
+首版 text-only 使用：
+
+```text
+note_idx
+note_title
+note_content
+note_type
+content_length
+commercial_flag
+taxonomy1_id
+taxonomy2_id
+taxonomy3_id
+```
+
+首版不读取 `image_path` 指向的文件，但可以保留 `image_num`、`note_type`、`video_duration` 这类轻量结构字段作为可选特征。
+
+### 3.3 recommendation_train / recommendation_test 字段
+
+`recommendation_train`：
+
+```text
+recent_clicked_note_idxs, request_idx, session_idx, user_idx, query, rec_result_details_with_idx
+```
+
+`recommendation_test`：
+
+```text
+recent_clicked_note_idxs, request_idx, session_idx, user_idx, rec_results, query, rec_result_details_with_idx
+```
+
+其中：
+
+```text
+recent_clicked_note_idxs: 用户请求前最近点击 note 列表，通常最多 20 个
+rec_result_details_with_idx: 推荐候选列表
+```
+
+`rec_result_details_with_idx` 每项包含：
+
+```text
+click, collect, comment, like, note_idx, page_time, position, timestamp, share
+```
+
+### 3.4 search_train / search_test 字段
+
+`search_train`：
+
+```text
+query, query_from_type, recent_clicked_note_idxs, search_idx, session_idx, user_idx,
+dpr_results, search_result_details_with_idx
+```
+
+`search_test`：
+
+```text
+query, query_from_type, recent_clicked_note_idxs, search_idx, session_idx, user_idx,
+bm25_results, dpr_results, search_results, search_result_details_with_idx
+```
+
+其中：
+
+```text
+bm25_results / dpr_results = [[note_idx, score], ...]
+```
+
+### 3.5 user_feat 字段
+
+```text
+gender, platform, age, fans_num, follows_num,
+dense_feat1 ... dense_feat40,
+location, user_idx
+```
+
+首版 User Tower 可以先只用：
+
+```text
+user_idx
+recent_clicked_note_idxs
+```
+
+第二版再加入：
+
+```text
+gender, platform, age, fans_num, follows_num, dense_feat1...dense_feat40
+```
+
+---
+
+## 4. 嵌套字段解析要求
+
+这些字段可能是 list、numpy array、字符串化 JSON 或字符串化 Python literal：
+
+```text
+recent_clicked_note_idxs
+rec_result_details_with_idx
+search_result_details_with_idx
+bm25_results
+dpr_results
+rec_results
+search_results
+```
+
+必须实现鲁棒解析函数，例如：
+
+```python
+def parse_nested(value):
+    ...
+```
+
+解析规则：
+
+1. 如果已经是 list / tuple / numpy array，转成 list。
+2. 如果是空值，返回空 list。
+3. 如果是字符串，先尝试 `json.loads`。
+4. 失败后尝试 `ast.literal_eval`。
+5. 仍失败则返回空 list，并记录 warning。
+
+---
+
+## 5. 目标目录结构
+
+Codex 需要创建并维护如下目录：
+
+```text
+RedBookRec/
+├── README.md
+├── AGENTS.md
+├── requirements.txt
+├── .gitignore
+│
+├── configs/
+│   ├── recall.yaml
+│   ├── dcn_lite.yaml
+│   ├── sim.yaml
+│   └── dpp.yaml
+│
+├── dataset/
+│   ├── notes/
+│   ├── recommendation_train/
+│   ├── recommendation_test/
+│   ├── search_train/
+│   ├── search_test/
+│   ├── user_feat/
+│   └── dqa/
+│
+├── data_cache/
+│   ├── notes/
+│   ├── recall/
+│   ├── search_recall/
+│   ├── hybrid_recall/
+│   ├── prerank/
+│   ├── rank/
+│   └── rerank/
+│
+├── checkpoints/
+│   ├── recall/
+│   ├── prerank/
+│   └── rank/
+│
+├── outputs/
+│   ├── recall/
+│   ├── search_recall/
+│   ├── hybrid_recall/
+│   ├── prerank/
+│   ├── rank/
+│   └── rerank/
+│
+├── scripts/
+│   ├── analyze_notes.py
+│   ├── analyze_recommendation.py
+│   ├── prepare_notes.py
+│   ├── build_recall_samples.py
+│   ├── train_recall.py
+│   ├── infer_recall.py
+│   ├── run_search_recall.py
+│   ├── merge_recall.py
+│   ├── train_prerank.py
+│   ├── infer_prerank.py
+│   ├── train_rank.py
+│   ├── infer_rank.py
+│   ├── run_dpp.py
+│   └── evaluate.py
+│
+└── src/
+    └── redbookrec/
+        ├── __init__.py
+        ├── data/
+        │   ├── __init__.py
+        │   ├── load_qilin.py
+        │   ├── preprocess_notes.py
+        │   ├── preprocess_rec.py
+        │   ├── preprocess_search.py
+        │   ├── id_mapping.py
+        │   └── sample_builder.py
+        ├── features/
+        │   ├── __init__.py
+        │   ├── text.py
+        │   ├── categorical.py
+        │   ├── sequence.py
+        │   └── numeric.py
+        ├── recall/
+        │   ├── __init__.py
+        │   ├── dataset.py
+        │   ├── model.py
+        │   ├── loss.py
+        │   ├── trainer.py
+        │   ├── faiss_index.py
+        │   └── inference.py
+        ├── search_recall/
+        │   ├── __init__.py
+        │   ├── bm25.py
+        │   ├── dpr.py
+        │   ├── merger.py
+        │   └── inference.py
+        ├── prerank/
+        │   ├── __init__.py
+        │   ├── dataset.py
+        │   ├── dcn_lite.py
+        │   ├── trainer.py
+        │   └── inference.py
+        ├── rank/
+        │   ├── __init__.py
+        │   ├── dataset.py
+        │   ├── sim.py
+        │   ├── trainer.py
+        │   └── inference.py
+        ├── rerank/
+        │   ├── __init__.py
+        │   ├── dpp.py
+        │   └── inference.py
+        ├── evaluation/
+        │   ├── __init__.py
+        │   ├── metrics.py
+        │   ├── recall_eval.py
+        │   ├── ranking_eval.py
+        │   └── diversity_eval.py
+        └── utils/
+            ├── __init__.py
+            ├── config.py
+            ├── logger.py
+            ├── seed.py
+            └── io.py
+```
+
+不要创建 `notebooks/` 目录。
+
+---
+
+## 6. Codex 需要生成的基础文件
+
+Codex 需要自行生成以下文件。
+
+### 6.1 README.md
+
+`README.md` 必须使用中文，内容包括：
+
+1. 项目简介。
+2. 数据集说明。
+3. 四阶段推荐流程。
+4. 环境安装，必须写明使用 `conda activate rs`。
+5. 目录结构。
+6. 数据分析、预处理、训练、推理、评估命令。
+7. 四个阶段的测试脚本命令。
+8. 输出文件说明。
+9. 当前版本限制：text-only，不使用图片/视频。
+10. 后续计划：多模态、user_feat 增强、hard negative、完整 DPP MAP。
+
+### 6.2 requirements.txt
+
+Codex 需要根据实际代码生成 `requirements.txt`。首版建议包含：
+
+```text
+numpy
+pandas
+pyarrow
+scikit-learn
+tqdm
+pyyaml
+torch
+faiss-cpu
+rank-bm25
+```
+
+若使用其他包，必须同步更新。
+
+### 6.3 .gitignore
+
+Codex 需要生成或更新 `.gitignore`，至少包含：
+
+```gitignore
+dataset/
+data_cache/
+checkpoints/
+outputs/
+
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+*.parquet
+*.pkl
+*.index
+
+__pycache__/
+*.pyc
+.env
+.vscode/
+.idea/
+.DS_Store
+```
+
+---
+
+## 7. 配置文件要求
+
+所有脚本都必须支持：
 
 ```bash
-conda run -n rs python scripts/train_dcn_lite.py
-conda run -n rs python scripts/train_sim.py --sim-last-n 20 --sim-top-k 20 --sim-max-history 200
+--config configs/xxx.yaml
 ```
 
-### Phase 4: DPP Re-rank and Demo App
+### 7.1 configs/recall.yaml
 
-- Use DPP to select the final list from top SIM candidates.
-- Combine predicted relevance with item similarity based on taxonomy and text or embedding features.
-- Use Streamlit for the first demo unless the project later needs a FastAPI service.
-- Show user history and generated recommendations on one page.
-- Keep each recommendation card focused on the note itself, score, and reason.
+首版建议内容：
 
-Expected command:
+```yaml
+seed: 2025
+
+data:
+  dataset_dir: dataset
+  cache_dir: data_cache
+  note_text_path: data_cache/notes/note_text.parquet
+  note_id_map_path: data_cache/notes/note_id_map.json
+  note_text_emb_path: data_cache/notes/note_text_emb.npy
+  train_samples_path: data_cache/recall/recall_train_samples.parquet
+  test_samples_path: data_cache/recall/recall_test_samples.parquet
+
+model:
+  embed_dim: 128
+  text_emb_dim: 384
+  max_history_len: 20
+  history_encoder: mean
+  dropout: 0.1
+  temperature: 0.05
+  use_text_emb: false
+  use_taxonomy: true
+  use_note_type: true
+
+train:
+  device: auto
+  batch_size: 64
+  epochs: 1
+  lr: 0.0001
+  weight_decay: 0.00001
+  num_workers: 0
+  max_train_samples: 20000
+  smoke_test: true
+
+infer:
+  top_k: 1000
+  max_notes: 50000
+  max_requests: 1000
+  note_emb_path: data_cache/recall/note_emb.npy
+  faiss_index_path: data_cache/recall/faiss.index
+  faiss_note_ids_path: data_cache/recall/faiss_note_ids.npy
+  dual_output_path: outputs/recall/test_top1000.parquet
+  search_output_path: outputs/search_recall/test_top1000.parquet
+  hybrid_output_path: outputs/hybrid_recall/test_top1000.parquet
+
+hybrid_recall:
+  w_dual: 0.7
+  w_search: 0.3
+```
+
+注意：默认配置是 CPU smoke test 配置。完整实验时用户可以将 `smoke_test` 设为 false，并移除 `max_*` 限制。
+
+### 7.2 其他配置
+
+还需要生成：
+
+```text
+configs/dcn_lite.yaml
+configs/sim.yaml
+configs/dpp.yaml
+```
+
+这些配置首版可以是最小可运行配置，但必须支持 CPU smoke test 和未来 GPU。
+
+---
+
+## 8. 阶段一：召回
+
+召回包括：
+
+```text
+Search Recall
+Dual-Tower Recall
+Hybrid Recall
+```
+
+### 8.1 Dual-Tower Recall
+
+实现文件：
+
+```text
+src/redbookrec/recall/
+```
+
+必须实现：
+
+```python
+class UserTower(nn.Module): ...
+class NoteTower(nn.Module): ...
+class DualTowerRecall(nn.Module): ...
+```
+
+User Tower 首版输入：
+
+```text
+user_idx
+recent_clicked_note_idxs
+```
+
+结构：
+
+```text
+user embedding
+history note embedding mean pooling
+concat
+MLP
+L2 normalize
+```
+
+Note Tower 首版输入：
+
+```text
+note_idx
+note_type
+taxonomy1_id
+taxonomy2_id
+taxonomy3_id
+note_text_emb 可选
+```
+
+结构：
+
+```text
+note embedding
+type embedding
+taxonomy embedding
+text projection 可选
+concat
+MLP
+L2 normalize
+```
+
+训练损失：
+
+```text
+In-batch softmax / InfoNCE
+```
+
+```python
+logits = user_emb @ note_emb.T / temperature
+labels = torch.arange(batch_size)
+loss = CrossEntropyLoss(logits, labels)
+```
+
+训练脚本：
 
 ```bash
-conda run -n rs streamlit run app.py
+python scripts/train_recall.py --config configs/recall.yaml
 ```
 
-## Later Extensions
+推理脚本：
 
-- Add Popular, ItemCF, and category recall as fallback or auxiliary feed recall channels.
-- Add dense semantic search recall for keyword requests.
-- Add ANN indexing with Faiss for faster Two-Tower retrieval.
-- Add multi-task learning for click, like, collect, comment, and share.
-- Add image features after downloading Qilin image data.
-- Add multimodal note embeddings to Two-Tower, SIM, and DPP similarity.
-- Add DQA/RAG-based recommendation explanation once the core recommender is stable.
+```bash
+python scripts/infer_recall.py --config configs/recall.yaml
+```
 
-## Development Rules
+输出：
 
-- Keep raw files in `dataset/` read-only.
-- Write generated data, indexes, and models to `artifacts/`.
-- Prefer small, testable modules over one large script.
-- Add dependencies to `requirements.txt` when they become necessary.
-- Use `rs` for all Python, training, evaluation, and app commands.
-- Do not assume packages are available in `base`.
-- Local tests only need to prove the pipeline can run; they do not need to consume the full Qilin dataset.
-- Keep all model code device-aware so the same scripts can run on CPU locally and on GPU servers later.
-- All scripts must read shared settings from `configs/` and allow explicit CLI overrides.
+```text
+outputs/recall/test_top1000.parquet
+```
 
-## Final README Requirement
+字段：
 
-Do not create or polish the root `README.md` until the implementation is stable enough to document accurately. The final README must be written in Chinese and should explain:
+```text
+request_idx
+user_idx
+note_idx
+recall_score
+recall_rank
+label_click
+source
+```
 
-- project background and Qilin dataset usage,
-- Search Recall + Two-Tower, DCN-lite, SIM with `lastN` and `topK`, and DPP,
-- local debug commands and GPU full-training commands,
-- training, evaluation, prediction, and demo commands,
-- ID mapping, default IDs, and cold-start behavior,
-- expected project structure and generated artifact locations.
+### 8.2 Search Recall
 
-The final README should use general environment wording and must not mention the user's private conda environment name.
+实现文件：
+
+```text
+src/redbookrec/search_recall/
+```
+
+脚本：
+
+```bash
+python scripts/run_search_recall.py --config configs/recall.yaml
+```
+
+首版策略：
+
+1. 对 `notes.note_text` 建 BM25 索引，或使用已有 `bm25_results/dpr_results` 做可选 fallback。
+2. recommendation request 的 `query` 非空时使用 query。
+3. query 为空时，用 `recent_clicked_note_idxs` 对应 note 标题拼成 pseudo-query。
+4. 输出 Top1000。
+
+输出：
+
+```text
+outputs/search_recall/test_top1000.parquet
+```
+
+字段：
+
+```text
+request_idx
+user_idx
+note_idx
+search_score
+search_rank
+label_click
+source
+```
+
+### 8.3 Hybrid Recall
+
+脚本：
+
+```bash
+python scripts/merge_recall.py --config configs/recall.yaml
+```
+
+输入：
+
+```text
+outputs/recall/test_top1000.parquet
+outputs/search_recall/test_top1000.parquet
+```
+
+输出：
+
+```text
+outputs/hybrid_recall/test_top1000.parquet
+```
+
+合并规则：
+
+```text
+hybrid_score = w_dual * norm(dual_score) + w_search * norm(search_score)
+```
+
+按 `request_idx, note_idx` 去重，每个 request 保留 Top1000。
+
+---
+
+## 9. 阶段二：粗排 DCN-lite
+
+配置：
+
+```text
+configs/dcn_lite.yaml
+```
+
+脚本：
+
+```bash
+python scripts/train_prerank.py --config configs/dcn_lite.yaml
+python scripts/infer_prerank.py --config configs/dcn_lite.yaml
+```
+
+输入：
+
+```text
+outputs/hybrid_recall/test_top1000.parquet
+data_cache/notes/note_text.parquet
+dataset/user_feat/*.parquet
+```
+
+如果首版没有 hybrid recall 的 train candidates，可用 `recommendation_train` 原始曝光候选构造训练样本。
+
+模型：
+
+```text
+DCN-lite = embedding layer + 1~2 cross layers + shallow MLP
+```
+
+特征：
+
+```text
+user_idx
+note_idx
+note_type
+taxonomy1/2/3
+content_length
+commercial_flag
+dual_score
+search_score
+hybrid_score
+hybrid_rank
+user_feat 可选
+```
+
+标签：
+
+```text
+click
+```
+
+输出：
+
+```text
+outputs/prerank/test_top200.parquet
+```
+
+字段：
+
+```text
+request_idx
+user_idx
+note_idx
+hybrid_score
+dcn_score
+dcn_rank
+label_click
+```
+
+每个 request 保留 Top200。
+
+---
+
+## 10. 阶段三：精排 SIM
+
+配置：
+
+```text
+configs/sim.yaml
+```
+
+脚本：
+
+```bash
+python scripts/train_rank.py --config configs/sim.yaml
+python scripts/infer_rank.py --config configs/sim.yaml
+```
+
+输入：
+
+```text
+outputs/prerank/test_top200.parquet
+recent_clicked_note_idxs
+note embedding
+```
+
+首版实现简化 SIM：
+
+1. 候选 note 作为 target。
+2. 与用户历史 note embedding 计算相似度。
+3. GSU：取 TopK 相关历史行为。
+4. ESU：对 TopK 历史行为做 target attention。
+5. MLP 输出 `sim_score`。
+
+输出：
+
+```text
+outputs/rank/test_top50.parquet
+```
+
+字段：
+
+```text
+request_idx
+user_idx
+note_idx
+dcn_score
+sim_score
+sim_rank
+label_click
+```
+
+每个 request 保留 Top50。
+
+---
+
+## 11. 阶段四：重排 DPP
+
+配置：
+
+```text
+configs/dpp.yaml
+```
+
+脚本：
+
+```bash
+python scripts/run_dpp.py --config configs/dpp.yaml
+```
+
+输入：
+
+```text
+outputs/rank/test_top50.parquet
+note embeddings
+```
+
+首版实现 greedy DPP-inspired rerank：
+
+```text
+score = relevance - lambda_diversity * max_similarity_to_selected
+```
+
+其中：
+
+```text
+relevance = sim_score
+similarity = cosine(note_emb_i, note_emb_j)
+```
+
+输出：
+
+```text
+outputs/rerank/test_top10.parquet
+```
+
+字段：
+
+```text
+request_idx
+user_idx
+note_idx
+sim_score
+dpp_score
+final_rank
+label_click
+```
+
+每个 request 输出 Top10。
+
+---
+
+## 12. 评估要求
+
+统一脚本：
+
+```bash
+python scripts/evaluate.py --config configs/recall.yaml --stage recall
+python scripts/evaluate.py --config configs/dcn_lite.yaml --stage prerank
+python scripts/evaluate.py --config configs/sim.yaml --stage rank
+python scripts/evaluate.py --config configs/dpp.yaml --stage rerank
+```
+
+### 12.1 召回指标
+
+```text
+Recall@50
+Recall@100
+Recall@500
+Recall@1000
+MRR@100
+NDCG@100
+```
+
+### 12.2 排序指标
+
+```text
+AUC
+LogLoss
+MRR@10
+NDCG@10
+MAP@10
+Recall@10
+```
+
+### 12.3 多样性指标
+
+```text
+ILD@10
+taxonomy coverage@10
+note_type diversity@10
+```
+
+---
+
+## 13. 数据预处理脚本要求
+
+### 13.1 analyze_notes.py
+
+命令：
+
+```bash
+python scripts/analyze_notes.py --config configs/recall.yaml
+```
+
+功能：
+
+- 打印 notes 行数、字段、缺失率。
+- 打印 note_type 分布。
+- 打印 taxonomy 缺失情况。
+- 打印文本长度统计。
+- 支持 `--max-notes`。
+
+### 13.2 analyze_recommendation.py
+
+命令：
+
+```bash
+python scripts/analyze_recommendation.py --config configs/recall.yaml
+```
+
+功能：
+
+- 打印 request 数。
+- 打印每个 request 候选数量。
+- 打印点击率。
+- 打印正负样本比例。
+- 检查候选 note 是否能在 notes 中找到。
+- 支持 `--max-requests`。
+
+### 13.3 prepare_notes.py
+
+命令：
+
+```bash
+python scripts/prepare_notes.py --config configs/recall.yaml
+```
+
+输入：
+
+```text
+dataset/notes/*.parquet
+```
+
+输出：
+
+```text
+data_cache/notes/note_text.parquet
+data_cache/notes/note_id_map.json
+data_cache/notes/note_text_emb.npy    # 可选
+```
+
+必须处理：
+
+- `note_idx` 转 int。
+- `note_title`、`note_content` 缺失填空。
+- taxonomy 中 `"nan"`、空值转 `"UNK"`。
+- 构造：
+
+```text
+note_text = note_title + " [SEP] " + note_content
+```
+
+- 生成 note ID 映射：
+
+```text
+raw note_idx -> model note_id，从 1 开始，0 留给 padding
+```
+
+### 13.4 build_recall_samples.py
+
+命令：
+
+```bash
+python scripts/build_recall_samples.py --config configs/recall.yaml
+```
+
+输出：
+
+```text
+data_cache/recall/recall_train_samples.parquet
+data_cache/recall/recall_test_samples.parquet
+```
+
+每条样本字段：
+
+```text
+request_idx
+session_idx
+user_idx
+recent_clicked_note_idxs
+pos_note_idx
+label
+```
+
+正样本：
+
+```text
+rec_result_details_with_idx 中 click = 1 的 note
+```
+
+首版双塔召回使用 in-batch negative，所以样本文件只保存正样本即可。
+
+---
+
+## 14. 最小验收标准
+
+Codex 首个可验收版本必须能在 CPU smoke test 下执行：
+
+```bash
+conda activate rs
+cd ~/RedBookRec
+
+python scripts/analyze_notes.py --config configs/recall.yaml --max-notes 50000
+python scripts/analyze_recommendation.py --config configs/recall.yaml --max-requests 5000
+python scripts/prepare_notes.py --config configs/recall.yaml --max-notes 50000
+python scripts/build_recall_samples.py --config configs/recall.yaml --max-requests 5000
+python scripts/train_recall.py --config configs/recall.yaml --smoke-test
+python scripts/infer_recall.py --config configs/recall.yaml --max-notes 50000 --max-requests 1000
+python scripts/evaluate.py --config configs/recall.yaml --stage recall
+```
+
+必须生成：
+
+```text
+data_cache/notes/note_text.parquet
+data_cache/notes/note_id_map.json
+data_cache/recall/recall_train_samples.parquet
+data_cache/recall/recall_test_samples.parquet
+checkpoints/recall/best.pt
+outputs/recall/test_top1000.parquet
+outputs/recall/recall_metrics.json
+```
+
+完整数据训练不是首版验收要求，但代码必须保留完整数据运行能力。
+
+---
+
+## 15. 推荐开发顺序
+
+Codex 请按以下顺序实现：
+
+1. 创建目录结构。
+2. 生成 `README.md`，必须中文。
+3. 生成 `requirements.txt`。
+4. 更新 `.gitignore`。
+5. 创建配置文件：
+   - `configs/recall.yaml`
+   - `configs/dcn_lite.yaml`
+   - `configs/sim.yaml`
+   - `configs/dpp.yaml`
+6. 实现公共工具：
+   - `utils/config.py`
+   - `utils/logger.py`
+   - `utils/seed.py`
+   - `utils/io.py`
+7. 实现数据读取与解析：
+   - `data/load_qilin.py`
+   - `data/preprocess_notes.py`
+   - `data/preprocess_rec.py`
+   - `data/preprocess_search.py`
+   - `data/sample_builder.py`
+8. 实现分析脚本：
+   - `scripts/analyze_notes.py`
+   - `scripts/analyze_recommendation.py`
+9. 实现 notes 预处理：
+   - `scripts/prepare_notes.py`
+10. 实现召回样本构造：
+   - `scripts/build_recall_samples.py`
+11. 实现双塔召回：
+   - `recall/dataset.py`
+   - `recall/model.py`
+   - `recall/loss.py`
+   - `recall/trainer.py`
+   - `recall/faiss_index.py`
+   - `recall/inference.py`
+12. 实现召回训练、推理、评估脚本。
+13. 实现 Search Recall 与 Hybrid Recall。
+14. 实现 DCN-lite 粗排。
+15. 实现 SIM 精排。
+16. 实现 DPP 重排。
+17. 最后补充和完善中文 `README.md`。
+
+---
+
+## 16. 重要提醒
+
+- 首版不读取图片和视频原始文件。
+- 首版不要端到端训练大模型。
+- 首版要保证 CPU 小样本可跑通。
+- 完整训练可以留给用户后续在更强机器上运行。
+- 所有阶段都要保留 GPU 接口。
+- 所有阶段都要有脚本可测试。
+- `README.md` 必须中文。
+- Codex 生成代码后，要优先运行 smoke test 验证。

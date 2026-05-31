@@ -1,0 +1,30 @@
+seed: 2025
+
+data:
+  dataset_dir: dataset
+  note_text_path: data_cache/notes/note_text.parquet
+  note_id_map_path: data_cache/notes/note_id_map.json
+  input_path: outputs/prerank/test_top200.parquet
+
+model:
+  embed_dim: 64
+  last_n: 20
+  top_k_history: 20
+  dropout: 0.1
+
+train:
+  device: auto
+  batch_size: 128
+  epochs: 1
+  lr: 0.001
+  num_workers: 0
+  smoke_test: true
+
+infer:
+  input_path: outputs/prerank/test_top200.parquet
+  output_path: outputs/rank/test_top50.parquet
+  top_k: 50
+
+paths:
+  checkpoint: checkpoints/rank/best.pt
+  metrics: outputs/rank/rank_metrics.json

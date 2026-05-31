@@ -1,21 +1,50 @@
-search:
-  index_type: hybrid_bm25_tfidf
-  analyzer: char
-  ngram_range: [1, 2]
-  min_df: 2
-  max_features: 200000
-  text_fields:
-    - note_title
-    - note_content
-    - taxonomy1_id
-    - taxonomy2_id
-    - taxonomy3_id
-  top_k: 200
+seed: 2025
 
-twotower:
-  embedding_dim: 64
-  hidden_dims: [128, 64]
-  negatives_per_positive: 3
-  learning_rate: 0.001
-  weight_decay: 0.000001
-  candidate_top_k: 200
+data:
+  dataset_dir: dataset
+  cache_dir: data_cache
+  note_text_path: data_cache/notes/note_text.parquet
+  note_id_map_path: data_cache/notes/note_id_map.json
+  note_text_emb_path: data_cache/notes/note_text_emb.npy
+  train_samples_path: data_cache/recall/recall_train_samples.parquet
+  test_samples_path: data_cache/recall/recall_test_samples.parquet
+
+model:
+  embed_dim: 64
+  text_emb_dim: 384
+  max_history_len: 20
+  history_encoder: mean
+  dropout: 0.1
+  temperature: 0.05
+  use_text_emb: false
+  use_taxonomy: true
+  use_note_type: true
+
+train:
+  device: auto
+  batch_size: 64
+  epochs: 1
+  lr: 0.0001
+  weight_decay: 0.00001
+  num_workers: 0
+  max_train_samples: 20000
+  smoke_test: true
+
+infer:
+  top_k: 1000
+  max_notes: 50000
+  max_requests: 1000
+  note_emb_path: data_cache/recall/note_emb.npy
+  faiss_index_path: data_cache/recall/faiss.index
+  faiss_note_ids_path: data_cache/recall/faiss_note_ids.npy
+  dual_output_path: outputs/recall/test_top1000.parquet
+  search_output_path: outputs/search_recall/test_top1000.parquet
+  hybrid_output_path: outputs/hybrid_recall/test_top1000.parquet
+
+paths:
+  recall_checkpoint: checkpoints/recall/best.pt
+  recall_metrics: outputs/recall/recall_metrics.json
+
+hybrid_recall:
+  w_dual: 0.7
+  w_search: 0.3

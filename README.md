@@ -1,364 +1,134 @@
 # RedBookRec
 
-RedBookRec 是一个基于 Qilin 数据集的小红书风格内容推荐系统项目。项目目标是构建一条完整的离线推荐链路，覆盖数据预处理、召回、粗排、精排、重排、评测和单用户预测。
-
-本项目使用公开 Qilin 数据集实现“小红书风格”的内容流推荐系统，不代表也不声称复现小红书真实线上推荐系统。
-
-## 系统架构
-
-RedBookRec 当前采用四阶段推荐架构：
-
-| 阶段 | 算法 | 作用 |
-| --- | --- | --- |
-| 召回 | Search Recall + Two-Tower | 有关键词时走 BM25 + TF-IDF 搜索召回；无关键词时走 Two-Tower 个性化召回 |
-| 粗排 | DCN-lite | 使用轻量特征交叉模型快速过滤弱相关候选 |
-| 精排 | SIM | 使用 `lastN` 近期行为和 `topK` 长历史目标相关行为建模用户兴趣 |
-| 重排 | DPP | 在高分候选中选择更高质量且更多样的最终列表 |
-
-整体流程：
+RedBookRec 是基于 Qilin 小红书数据集的 text-only 推荐系统首版实现。项目目标是用轻量、CPU 可运行的方式打通完整推荐链路：
 
 ```text
-Qilin dataset
-  -> inspect_dataset
-  -> prepare_data
-  -> build_search_index / train_twotower
-  -> train_dcn_lite
-  -> train_sim
-  -> rerank_dpp
-  -> evaluate
-  -> recommend_user / app.py
+Search Recall + Dual-Tower Recall
+  -> Hybrid Recall
+  -> DCN-lite 粗排
+  -> SIM 精排
+  -> DPP 重排
+  -> TopK 推荐列表
 ```
 
-## 数据集目录
+当前版本不读取图片和视频原始文件，只使用文本、ID、类别、统计字段和用户近期点击序列，优先保证数据分析、预处理、训练、推理、评估流程能在本机 smoke test 下跑通。
 
-默认数据集目录为 `dataset/`。
+## 数据集
 
-主要使用：
+数据默认放在 `dataset/`：
 
-| 路径 | 用途 |
-| --- | --- |
-| `dataset/recommendation_train/` | 推荐训练日志 |
-| `dataset/recommendation_test/` | 推荐测试日志 |
-| `dataset/notes/` | 笔记内容库 |
-| `dataset/user_feat/` | 用户画像和 dense 用户特征 |
-| `dataset/search_train/` | 搜索训练数据，可用于搜索召回优化 |
-| `dataset/search_test/` | 搜索测试数据，可用于搜索召回评测 |
-| `dataset/dqa/` | 后续可用于推荐解释或 RAG |
-
-原始数据保持只读。预处理结果、索引、模型和评测结果默认写入 `artifacts/`。
+| 子集 | 作用 |
+|---|---|
+| `notes` | note 物料库，提供标题、正文、类型、taxonomy 等 |
+| `recommendation_train` | 推荐训练请求和曝光候选 |
+| `recommendation_test` | 推荐测试请求和曝光候选 |
+| `search_train` / `search_test` | 搜索相关请求，可用于搜索召回 |
+| `user_feat` | 用户画像和 dense features，首版暂未深度使用 |
+| `dqa` | DQA/RAG 数据，首版推荐主链路暂未使用 |
 
 ## 环境安装
 
-建议使用 Python 虚拟环境或 conda 环境，环境名称不限。
+使用已有 conda 环境：
 
 ```bash
+cd ~/RedBookRec
+conda activate rs
 pip install -r requirements.txt
 ```
 
-如果暂时不需要 Streamlit，也可以先只跑命令行链路。当前 `app.py` 在未安装 Streamlit 时会提示改用 `scripts/recommend_user.py`。
+`faiss-cpu` 和 `rank-bm25` 写在依赖中；代码对它们做了降级处理，缺失时仍可用 sklearn / numpy 跑通 smoke test。
 
-## 配置系统
-
-项目使用统一配置目录：
+## 目录结构
 
 ```text
-configs/
-  base.yaml
-  debug.yaml
-  full.yaml
-  recall.yaml
-  rank.yaml
-  rerank.yaml
+configs/                 # recall、dcn_lite、sim、dpp 配置
+scripts/                 # 数据分析、训练、推理、评估入口
+src/redbookrec/          # 推荐系统源码
+data_cache/              # 预处理数据和中间缓存
+checkpoints/             # 模型检查点
+outputs/                 # 各阶段推荐结果和指标
+dataset/                 # Qilin 原始 parquet 数据
 ```
 
-配置覆盖顺序：
+## 召回 Smoke Test
+
+```bash
+python scripts/analyze_notes.py --config configs/recall.yaml --max-notes 50000
+python scripts/analyze_recommendation.py --config configs/recall.yaml --max-requests 5000
+python scripts/prepare_notes.py --config configs/recall.yaml --max-notes 50000
+python scripts/build_recall_samples.py --config configs/recall.yaml --max-requests 5000
+python scripts/train_recall.py --config configs/recall.yaml --smoke-test
+python scripts/infer_recall.py --config configs/recall.yaml --max-notes 50000 --max-requests 1000
+python scripts/evaluate.py --config configs/recall.yaml --stage recall
+```
+
+主要产物：
 
 ```text
-base.yaml
-  -> 阶段配置，例如 recall.yaml / rank.yaml
-  -> debug.yaml 或 full.yaml
-  -> 命令行参数
+data_cache/notes/note_text.parquet
+data_cache/notes/note_id_map.json
+data_cache/recall/recall_train_samples.parquet
+data_cache/recall/recall_test_samples.parquet
+checkpoints/recall/best.pt
+outputs/recall/test_top1000.parquet
+outputs/recall/recall_metrics.json
 ```
 
-本地 16 核 CPU、24 GB 内存环境只需要跑通小样本 smoke test。全量训练建议迁移到 GPU 服务器后再执行。
+## 四阶段命令
 
-常用参数：
-
-| 参数 | 作用 |
-| --- | --- |
-| `--debug` | 小样本调试模式 |
-| `--full` | 全量模式 |
-| `--device cpu|cuda|auto` | 指定运行设备 |
-| `--max-users` | 限制用户数 |
-| `--max-notes` | 限制笔记数 |
-| `--max-interactions` | 限制交互样本数 |
-| `--batch-size` | batch 大小 |
-| `--num-workers` | DataLoader worker 数 |
-| `--epochs` | 训练轮数 |
-| `--mixed-precision` | GPU 混合精度 |
-
-## 运行命令
-
-以下命令均在项目根目录执行。
-
-### 1. 检查数据 Schema
+Search Recall 与 Hybrid Recall：
 
 ```bash
-python scripts/inspect_dataset.py --debug
+python scripts/run_search_recall.py --config configs/recall.yaml --max-notes 50000 --max-requests 1000
+python scripts/merge_recall.py --config configs/recall.yaml
+python scripts/evaluate.py --config configs/recall.yaml --stage hybrid_recall
 ```
 
-输出会保存到：
-
-```text
-artifacts/processed/schema_summary.json
-```
-
-### 2. 数据预处理
+DCN-lite 粗排：
 
 ```bash
-python scripts/prepare_data.py --debug --max-users 500 --max-notes 5000 --max-interactions 5000
+python scripts/train_prerank.py --config configs/dcn_lite.yaml --smoke-test
+python scripts/infer_prerank.py --config configs/dcn_lite.yaml
+python scripts/evaluate.py --config configs/dcn_lite.yaml --stage prerank
 ```
 
-预处理会完成：
-
-- 展开 `rec_result_details_with_idx`
-- 构建曝光、点击、互动样本
-- 生成 `click_label`、`engage_label`、`relevance`
-- 构建用户 ID 和笔记 ID 映射
-- 预留默认 ID：未知用户和未知笔记均映射到 `0`
-- 构建用户历史行为序列
-- 拼接笔记特征和用户特征
-
-主要输出：
-
-```text
-artifacts/processed/interactions.parquet
-artifacts/processed/training_features.parquet
-artifacts/processed/notes.parquet
-artifacts/processed/users.parquet
-artifacts/processed/user_history.parquet
-artifacts/processed/mappings/
-```
-
-### 3. 构建搜索召回索引
+SIM 精排：
 
 ```bash
-python scripts/build_search_index.py --debug --max-notes 5000
+python scripts/train_rank.py --config configs/sim.yaml --smoke-test
+python scripts/infer_rank.py --config configs/sim.yaml
+python scripts/evaluate.py --config configs/sim.yaml --stage rank
 ```
 
-当前搜索召回使用 BM25 + TF-IDF 混合检索：
-
-```text
-query -> BM25 + TF-IDF -> note title/content/taxonomy -> topK notes
-```
-
-输出：
-
-```text
-artifacts/indexes/search_index.joblib
-artifacts/indexes/search_tfidf.joblib
-```
-
-### 4. 训练 Two-Tower 召回模型
+DPP 重排：
 
 ```bash
-python scripts/train_twotower.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-users 20 --max-interactions 500
+python scripts/run_dpp.py --config configs/dpp.yaml
+python scripts/evaluate.py --config configs/dpp.yaml --stage rerank
 ```
 
-输出：
+## 输出说明
 
-```text
-artifacts/checkpoints/twotower.pt
-artifacts/indexes/twotower_candidates.joblib
-artifacts/metrics/twotower_train.json
-```
+| 阶段 | 输出 |
+|---|---|
+| Dual-Tower Recall | `outputs/recall/test_top1000.parquet` |
+| Search Recall | `outputs/search_recall/test_top1000.parquet` |
+| Hybrid Recall | `outputs/hybrid_recall/test_top1000.parquet` |
+| DCN-lite | `outputs/prerank/test_top200.parquet` |
+| SIM | `outputs/rank/test_top50.parquet` |
+| DPP | `outputs/rerank/test_top10.parquet` |
 
-### 5. 训练 DCN-lite 粗排模型
+## 当前限制
 
-```bash
-python scripts/train_dcn_lite.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-interactions 500
-```
+- 首版是 text-only，不读取 Qilin 图片和视频原始文件。
+- 双塔召回使用 in-batch negative，默认配置面向 CPU smoke test。
+- DCN-lite、SIM、DPP 已提供可运行骨架和轻量策略，后续可替换为更强训练逻辑。
+- 默认配置优先小样本验证，不代表全量最优效果。
 
-输出：
+## 后续计划
 
-```text
-artifacts/checkpoints/dcn_lite.pt
-artifacts/metrics/dcn_train.json
-```
-
-### 6. 训练 SIM 精排模型
-
-```bash
-python scripts/train_sim.py --debug --device cpu --epochs 1 --batch-size 128 --num-workers 0 --max-interactions 500 --sim-last-n 5 --sim-top-k 5 --sim-max-history 50
-```
-
-SIM 当前设计：
-
-- `lastN`：用户最近 N 条点击或互动行为，表达短期兴趣
-- `topK`：从用户长历史中取与候选笔记最相关的 K 条行为，表达长期目标相关兴趣
-- 新用户或历史不足时使用 `note_id = 0` padding
-
-输出：
-
-```text
-artifacts/checkpoints/sim.pt
-artifacts/metrics/sim_train.json
-```
-
-### 7. DPP 重排
-
-```bash
-python scripts/rerank_dpp.py --debug --top-k 10
-```
-
-DPP 重排会结合：
-
-- 历史已看笔记过滤
-- 重复 `note_id` / `raw_note_idx` 过滤
-- 标题和正文近似重复过滤
-- taxonomy 相似度多样性约束
-
-输出：
-
-```text
-artifacts/processed/sample_dpp_rerank.parquet
-```
-
-### 8. 离线评测
-
-```bash
-python scripts/evaluate.py --debug --top-k 10 --max-interactions 1000
-```
-
-输出：
-
-```text
-artifacts/metrics/eval_summary.json
-```
-
-当前评测包含：
-
-- `HitRate@K`
-- `MRR@K`
-- `NDCG@K`
-- `Recall@K`
-
-### 9. 单用户推荐
-
-无关键词 Feed 推荐：
-
-```bash
-python scripts/recommend_user.py --debug --random-user --top-k 5
-```
-
-指定用户：
-
-```bash
-python scripts/recommend_user.py --debug --user-id 35 --top-k 5
-```
-
-带关键词搜索推荐：
-
-```bash
-python scripts/recommend_user.py --debug --user-id 0 --query "春季穿搭" --top-k 5
-```
-
-### 10. Streamlit Demo
-
-安装 Streamlit 后可运行：
-
-```bash
-streamlit run app.py
-```
-
-如果没有安装 Streamlit，请先使用命令行推荐脚本。
-
-## GPU 全量训练示例
-
-迁移到 GPU 服务器后，可以使用：
-
-```bash
-python scripts/prepare_data.py --full
-python scripts/build_search_index.py --full
-python scripts/train_twotower.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
-python scripts/train_dcn_lite.py --full --device cuda --epochs 10 --batch-size 4096 --mixed-precision
-python scripts/train_sim.py --full --device cuda --epochs 5 --batch-size 1024 --mixed-precision --sim-last-n 50 --sim-top-k 100 --sim-max-history 1000
-python scripts/evaluate.py --full --top-k 100
-```
-
-## ID 映射与冷启动
-
-所有 ID 映射都预留默认值：
-
-| 类型 | 默认 ID | 说明 |
-| --- | --- | --- |
-| 用户 | `0` | 未知用户、新用户、缺失用户 |
-| 笔记 | `0` | 未知笔记、新笔记、缺失笔记 |
-| 类目 | `0` | 未知类目、缺失类目 |
-| query/token | `0` | 空 query 或未知 token |
-
-真实数据 ID 从 `1` 开始映射。模型 embedding 中的 `0` 作为 padding / unknown 使用。
-
-冷启动策略：
-
-- 新用户有 query：走搜索召回
-- 新用户无 query：走热门或其他 fallback 候选
-- 新笔记：先用默认 note ID，并结合文本、类目和统计特征参与排序
-- 历史不足：使用 `note_id = 0` padding
-
-## 项目结构
-
-```text
-RedBookRec/
-  app.py
-  requirements.txt
-  AGENTS.md
-  README.md
-  configs/
-  dataset/
-  artifacts/
-  redbookrec/
-    config.py
-    data.py
-    features.py
-    metrics.py
-    models.py
-    recommend.py
-    rerank.py
-    search.py
-    train_utils.py
-  scripts/
-    inspect_dataset.py
-    prepare_data.py
-    build_search_index.py
-    train_twotower.py
-    train_dcn_lite.py
-    train_sim.py
-    rerank_dpp.py
-    evaluate.py
-    recommend_user.py
-```
-
-## 当前状态
-
-当前版本已经完成一条 debug 小样本链路：
-
-```text
-schema inspect
-  -> data prepare
-  -> BM25 + TF-IDF search recall
-  -> Two-Tower recall
-  -> DCN-lite
-  -> SIM
-  -> DPP
-  -> evaluate
-  -> recommend_user
-```
-
-后续可以继续增强：
-
-- Faiss ANN 检索
-- 更完整的负采样策略
-- 更强的 SIM topK 历史检索
-- 更精细的多任务损失权重与目标校准
-- 多模态图片特征
+- 引入图片、多模态 note embedding。
+- 更充分使用 `user_feat` 的画像和 dense features。
+- 增加 hard negative、热门/ItemCF/category fallback 召回。
+- 完善 SIM 的长序列行为建模。
+- 实现完整 DPP MAP kernel 与更丰富的多样性评估。

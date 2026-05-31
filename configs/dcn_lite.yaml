@@ -1,0 +1,32 @@
+seed: 2025
+
+data:
+  dataset_dir: dataset
+  cache_dir: data_cache
+  note_text_path: data_cache/notes/note_text.parquet
+  hybrid_input_path: outputs/hybrid_recall/test_top1000.parquet
+  train_input_path: dataset/recommendation_train/train-00000-of-00001.parquet
+
+model:
+  embed_dim: 32
+  hidden_dims: [128, 64]
+  dropout: 0.1
+
+train:
+  device: auto
+  batch_size: 128
+  epochs: 1
+  lr: 0.001
+  weight_decay: 0.00001
+  num_workers: 0
+  max_train_samples: 20000
+  smoke_test: true
+
+infer:
+  input_path: outputs/hybrid_recall/test_top1000.parquet
+  output_path: outputs/prerank/test_top200.parquet
+  top_k: 200
+
+paths:
+  checkpoint: checkpoints/prerank/best.pt
+  metrics: outputs/prerank/prerank_metrics.json
