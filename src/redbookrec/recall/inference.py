@@ -10,6 +10,7 @@ from tqdm import tqdm
 from redbookrec.data.id_mapping import map_raw, map_sequence
 from redbookrec.data.load_qilin import parse_nested
 from redbookrec.data.preprocess_rec import clicked_set, read_recommendation
+from redbookrec.recall.dataset import NOTE_DENSE_COLS, USER_DENSE_COLS, build_note_features
 from redbookrec.recall.faiss_index import search_topk
 from redbookrec.recall.model import DualTowerRecall
 from redbookrec.utils.config import get_device
@@ -23,6 +24,8 @@ def _load_model(cfg: dict, device: torch.device) -> tuple[DualTowerRecall, dict]
         embed_dim=int(ckpt["embed_dim"]),
         dropout=float(ckpt.get("dropout", 0.1)),
         temperature=float(ckpt.get("temperature", 0.05)),
+        user_dense_dim=int(ckpt.get("user_dense_dim", len(USER_DENSE_COLS))),
+        note_dense_dim=int(ckpt.get("note_dense_dim", len(NOTE_DENSE_COLS))),
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -32,11 +35,12 @@ def _load_model(cfg: dict, device: torch.device) -> tuple[DualTowerRecall, dict]
 def infer_recall(cfg: dict, max_notes: int | None = None, max_requests: int | None = None) -> pd.DataFrame:
     device = torch.device(get_device(cfg["train"].get("device", "auto")))
     model, ckpt = _load_model(cfg, device)
-    note_df = pd.read_parquet(cfg["data"]["note_text_path"])
+    all_note_df = pd.read_parquet(cfg["data"]["note_text_path"])
+    note_df = all_note_df
     if max_notes is None:
         max_notes = cfg.get("infer", {}).get("max_notes")
     if max_notes:
-        note_df = note_df.head(int(max_notes))
+        note_df = all_note_df.head(int(max_notes)).copy()
 
     if max_requests is None:
         max_requests = cfg.get("infer", {}).get("max_requests")
@@ -46,25 +50,41 @@ def infer_recall(cfg: dict, max_notes: int | None = None, max_requests: int | No
     for req in req_df.itertuples(index=False):
         clicked_for_eval.update(clicked_set(parse_nested(getattr(req, "rec_result_details_with_idx", []))))
     present = set(note_df["note_idx"].astype(int))
-    extras = [
-        {"note_idx": raw, "note_id": map_raw(note_map, raw)}
-        for raw in sorted(clicked_for_eval - present)
-        if map_raw(note_map, raw) > 0
-    ]
+    extras = sorted(clicked_for_eval - present)
     if extras:
-        note_df = pd.concat([note_df, pd.DataFrame(extras)], ignore_index=True)
+        extra_df = all_note_df[all_note_df["note_idx"].astype(int).isin(extras)].copy()
+        if not extra_df.empty:
+            note_df = pd.concat([note_df, extra_df], ignore_index=True)
+    note_feature_map = build_note_features(note_df)
+    note_feat_rows = [note_feature_map.get(str(int(raw)), {}) for raw in note_df["note_idx"].astype(int)]
     note_ids = note_df["note_id"].astype("int64").to_numpy()
     note_tensor = torch.tensor(note_ids, dtype=torch.long, device=device)
+    note_type_tensor = torch.tensor([int(x.get("note_type", 0)) for x in note_feat_rows], dtype=torch.long, device=device)
+    note_tax_tensor = torch.tensor([x.get("tax", [0, 0, 0]) for x in note_feat_rows], dtype=torch.long, device=device)
+    note_dense_tensor = torch.tensor([x.get("dense", [0.0] * len(NOTE_DENSE_COLS)) for x in note_feat_rows], dtype=torch.float32, device=device)
     note_vecs: list[np.ndarray] = []
     with torch.no_grad():
         for start in range(0, len(note_tensor), 8192):
-            note_vecs.append(model.encode_note(note_tensor[start : start + 8192]).cpu().numpy())
+            end = start + 8192
+            note_vecs.append(
+                model.encode_note(
+                    note_tensor[start:end],
+                    note_type_tensor[start:end],
+                    note_tax_tensor[start:end, 0],
+                    note_tax_tensor[start:end, 1],
+                    note_tax_tensor[start:end, 2],
+                    note_dense_tensor[start:end],
+                )
+                .cpu()
+                .numpy()
+            )
     note_emb = np.vstack(note_vecs).astype("float32")
     Path(cfg["infer"]["note_emb_path"]).parent.mkdir(parents=True, exist_ok=True)
     np.save(Path(cfg["infer"]["note_emb_path"]), note_emb)
     top_k = min(int(cfg["infer"].get("top_k", 1000)), len(note_df))
     rows: list[dict] = []
     user_map = ckpt["user_map"]
+    user_features = ckpt.get("user_features", {})
     max_history_len = int(ckpt["max_history_len"])
 
     user_embs: list[np.ndarray] = []
@@ -76,7 +96,10 @@ def infer_recall(cfg: dict, max_notes: int | None = None, max_requests: int | No
             hist = [0] * (max_history_len - len(hist)) + hist
             u = torch.tensor([user_id], dtype=torch.long, device=device)
             h = torch.tensor([hist], dtype=torch.long, device=device)
-            user_embs.append(model.encode_user(u, h).cpu().numpy()[0])
+            user_feat = user_features.get(str(int(getattr(req, "user_idx"))), {})
+            user_cat = torch.tensor([user_feat.get("cat", [0, 0, 0, 0])], dtype=torch.long, device=device)
+            user_dense = torch.tensor([user_feat.get("dense", [0.0] * len(USER_DENSE_COLS))], dtype=torch.float32, device=device)
+            user_embs.append(model.encode_user(u, h, user_cat, user_dense).cpu().numpy()[0])
             clicked = clicked_set(parse_nested(getattr(req, "rec_result_details_with_idx", [])))
             request_meta.append(
                 {

@@ -15,8 +15,10 @@ def main() -> None:
     args = parser.parse_args()
     cfg = load_config(args.config)
     train, test = build_recall_samples(cfg, max_requests=args.max_requests)
-    print(f"train_positive_samples={len(train)} path={cfg['data']['train_samples_path']}")
-    print(f"test_positive_samples={len(test)} path={cfg['data']['test_samples_path']}")
+    train_pos = int(train["label"].sum()) if "label" in train else len(train)
+    test_pos = int(test["label"].sum()) if "label" in test else len(test)
+    print(f"train_exposure_samples={len(train)} positives={train_pos} path={cfg['data']['train_samples_path']}")
+    print(f"test_exposure_samples={len(test)} positives={test_pos} path={cfg['data']['test_samples_path']}")
 
 
 if __name__ == "__main__":
