@@ -23,6 +23,41 @@ from redbookrec.utils.config import get_device
 from redbookrec.utils.io import read_json
 
 
+def _save_recall_checkpoint(
+    path: Path,
+    model: DualTowerRecall,
+    cfg: dict,
+    num_users: int,
+    num_notes: int,
+    user_map: dict[str, int],
+    note_map: dict[str, int],
+    user_features: dict,
+    epoch: int,
+    epoch_loss: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state": model.state_dict(),
+            "num_users": num_users,
+            "num_notes": num_notes,
+            "embed_dim": int(cfg["model"]["embed_dim"]),
+            "temperature": float(cfg["model"].get("temperature", 0.05)),
+            "dropout": float(cfg["model"].get("dropout", 0.1)),
+            "user_map": user_map,
+            "note_map": note_map,
+            "user_features": user_features,
+            "max_history_len": int(cfg["model"]["max_history_len"]),
+            "user_dense_dim": len(USER_DENSE_COLS),
+            "note_dense_dim": len(NOTE_DENSE_COLS),
+            "loss_type": "binary_exposure",
+            "best_epoch": int(epoch),
+            "best_epoch_loss": float(epoch_loss),
+        },
+        path,
+    )
+
+
 def train_recall_model(cfg: dict, smoke_test: bool = False) -> dict:
     device = torch.device(get_device(cfg["train"].get("device", "auto")))
     samples = pd.read_parquet(cfg["data"]["train_samples_path"])
@@ -80,6 +115,9 @@ def train_recall_model(cfg: dict, smoke_test: bool = False) -> dict:
     losses: list[float] = []
     model.train()
     epoch_losses: list[float] = []
+    best_epoch = 0
+    best_loss = float("inf")
+    ckpt_path = Path(cfg["paths"]["recall_checkpoint"])
     for epoch in range(int(cfg["train"].get("epochs", 1))):
         pbar = tqdm(loader, desc=f"train_recall epoch={epoch + 1}", leave=False)
         running = 0.0
@@ -104,33 +142,21 @@ def train_recall_model(cfg: dict, smoke_test: bool = False) -> dict:
             seen += int(labels.numel())
             pbar.set_postfix(loss=f"{losses[-1]:.4f}")
         epoch_losses.append(running / max(1, seen))
-        print(f"epoch={epoch + 1} avg_loss={epoch_losses[-1]:.6f}")
-
-    ckpt_path = Path(cfg["paths"]["recall_checkpoint"])
-    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "num_users": num_users,
-            "num_notes": num_notes,
-            "embed_dim": int(cfg["model"]["embed_dim"]),
-            "temperature": float(cfg["model"].get("temperature", 0.05)),
-            "dropout": float(cfg["model"].get("dropout", 0.1)),
-            "user_map": user_map,
-            "note_map": note_map,
-            "user_features": user_features,
-            "max_history_len": int(cfg["model"]["max_history_len"]),
-            "user_dense_dim": len(USER_DENSE_COLS),
-            "note_dense_dim": len(NOTE_DENSE_COLS),
-            "loss_type": "binary_exposure",
-        },
-        ckpt_path,
-    )
+        epoch_loss = epoch_losses[-1]
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            best_epoch = epoch + 1
+            _save_recall_checkpoint(ckpt_path, model, cfg, num_users, num_notes, user_map, note_map, user_features, best_epoch, best_loss)
+            print(f"epoch={epoch + 1} avg_loss={epoch_loss:.6f} saved_best={ckpt_path}")
+        else:
+            print(f"epoch={epoch + 1} avg_loss={epoch_loss:.6f} best_epoch={best_epoch} best_loss={best_loss:.6f}")
     return {
         "checkpoint": str(ckpt_path),
         "train_samples": int(len(samples)),
         "positive_samples": int(pos),
         "negative_samples": int(neg),
         "loss": losses[-1] if losses else None,
+        "best_epoch": best_epoch,
+        "best_epoch_loss": best_loss if best_loss < float("inf") else None,
         "epoch_losses": epoch_losses,
     }
