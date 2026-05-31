@@ -37,6 +37,22 @@ def infer_recall(cfg: dict, max_notes: int | None = None, max_requests: int | No
         max_notes = cfg.get("infer", {}).get("max_notes")
     if max_notes:
         note_df = note_df.head(int(max_notes))
+
+    if max_requests is None:
+        max_requests = cfg.get("infer", {}).get("max_requests")
+    req_df = read_recommendation(cfg["data"]["dataset_dir"], "recommendation_test", max_requests=max_requests)
+    note_map = ckpt["note_map"]
+    clicked_for_eval: set[int] = set()
+    for req in req_df.itertuples(index=False):
+        clicked_for_eval.update(clicked_set(parse_nested(getattr(req, "rec_result_details_with_idx", []))))
+    present = set(note_df["note_idx"].astype(int))
+    extras = [
+        {"note_idx": raw, "note_id": map_raw(note_map, raw)}
+        for raw in sorted(clicked_for_eval - present)
+        if map_raw(note_map, raw) > 0
+    ]
+    if extras:
+        note_df = pd.concat([note_df, pd.DataFrame(extras)], ignore_index=True)
     note_ids = note_df["note_id"].astype("int64").to_numpy()
     note_tensor = torch.tensor(note_ids, dtype=torch.long, device=device)
     note_vecs: list[np.ndarray] = []
@@ -44,15 +60,11 @@ def infer_recall(cfg: dict, max_notes: int | None = None, max_requests: int | No
         for start in range(0, len(note_tensor), 8192):
             note_vecs.append(model.encode_note(note_tensor[start : start + 8192]).cpu().numpy())
     note_emb = np.vstack(note_vecs).astype("float32")
+    Path(cfg["infer"]["note_emb_path"]).parent.mkdir(parents=True, exist_ok=True)
     np.save(Path(cfg["infer"]["note_emb_path"]), note_emb)
-
-    if max_requests is None:
-        max_requests = cfg.get("infer", {}).get("max_requests")
-    req_df = read_recommendation(cfg["data"]["dataset_dir"], "recommendation_test", max_requests=max_requests)
     top_k = min(int(cfg["infer"].get("top_k", 1000)), len(note_df))
     rows: list[dict] = []
     user_map = ckpt["user_map"]
-    note_map = ckpt["note_map"]
     max_history_len = int(ckpt["max_history_len"])
 
     user_embs: list[np.ndarray] = []
