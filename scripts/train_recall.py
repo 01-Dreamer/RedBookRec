@@ -4,7 +4,7 @@ import argparse
 
 import _bootstrap  # noqa: F401
 
-from redbookrec.recall.trainer import train_recall_model
+from redbookrec.recall.train import train_recall_model
 from redbookrec.utils.config import load_config
 from redbookrec.utils.seed import set_seed
 
