@@ -32,7 +32,6 @@ Search Recall + Dual-Tower Recall
 
 ```bash
 cd ~/RedBookRec
-conda activate rs
 pip install -r requirements.txt
 ```
 

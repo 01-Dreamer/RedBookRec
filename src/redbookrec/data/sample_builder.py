@@ -28,6 +28,7 @@ def _exposure_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
                     "request_idx": int(getattr(base, "request_idx", -1)),
                     "session_idx": int(getattr(base, "session_idx", -1)),
                     "user_idx": int(getattr(base, "user_idx", -1)),
+                    "query": getattr(base, "query", "") or "",
                     "recent_clicked_note_idxs": history,
                     "note_idx": note_idx,
                     "pos_note_idx": note_idx,

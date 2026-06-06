@@ -7,3 +7,4 @@ pyyaml
 torch
 faiss-cpu
 rank-bm25
+transformers==4.37.2

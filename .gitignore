@@ -1,5 +1,6 @@
 dataset/
 Qilin/
+model/
 data_cache/
 checkpoints/
 outputs/

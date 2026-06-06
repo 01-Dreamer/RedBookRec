@@ -1,9 +1,10 @@
-seed: 2025
+seed: 2026
 
 data:
   dataset_dir: dataset
   cache_dir: data_cache
   note_text_path: data_cache/notes/note_text.parquet
+  note_id_map_path: data_cache/notes/note_id_map.json
   hybrid_input_path: outputs/hybrid_recall/test_top1000.parquet
   train_input_path: dataset/recommendation_train/train-00000-of-00001.parquet
 
@@ -26,6 +27,7 @@ infer:
   input_path: outputs/hybrid_recall/test_top1000.parquet
   output_path: outputs/prerank/test_top200.parquet
   top_k: 200
+  batch_size: 8192
 
 paths:
   checkpoint: checkpoints/prerank/best.pt

@@ -1,4 +1,4 @@
-seed: 2025
+seed: 2026
 
 data:
   dataset_dir: dataset
@@ -11,12 +11,18 @@ data:
 
 model:
   embed_dim: 64
-  text_emb_dim: 384
+  text_emb_dim: 768
+  text_vocab_size: 50000
+  text_max_len: 64
+  text_encoder_name_or_path: model/bert-base-chinese/
+  text_encoder_batch_size: 256
+  text_encoder_max_length: 128
+  text_encoder_fp16: true
   max_history_len: 20
   history_encoder: mean
   dropout: 0.1
   temperature: 0.05
-  use_text_emb: false
+  use_text_emb: true
   use_taxonomy: true
   use_note_type: true
 
@@ -27,6 +33,7 @@ train:
   lr: 0.001
   weight_decay: 0.00001
   num_workers: 0
+  negative_samples: 18
   max_train_samples:
   smoke_test: false
 

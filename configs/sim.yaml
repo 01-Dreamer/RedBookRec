@@ -1,4 +1,4 @@
-seed: 2025
+seed: 2026
 
 data:
   dataset_dir: dataset
@@ -8,6 +8,7 @@ data:
 
 model:
   embed_dim: 64
+  hidden_dims: [256, 128, 64]
   last_n: 20
   top_k_history: 20
   dropout: 0.1
@@ -17,13 +18,16 @@ train:
   batch_size: 128
   epochs: 1
   lr: 0.001
+  weight_decay: 0.00001
   num_workers: 0
+  max_train_samples: 20000
   smoke_test: true
 
 infer:
   input_path: outputs/prerank/test_top200.parquet
   output_path: outputs/rank/test_top50.parquet
   top_k: 50
+  batch_size: 8192
 
 paths:
   checkpoint: checkpoints/rank/best.pt
